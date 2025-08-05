@@ -46,6 +46,12 @@ def build_agent(config: AgentConfig):
 
     # 4. Bangun prompt dengan system message, optional memory, dan scratchpad
     system_message = config.system_message or "You are a helpful assistant."
+    system_message += (
+        "\nStart your response with 'Thought:' and strictly follow the format instructions below. "
+        "Do not output any text before the first 'Thought:' line. If the system message requests "
+        "stylistic phrases, include them in the 'Final Answer' only."
+    )
+
     template = (
         f"{system_message}\n\n"
         "You have access to the following tools:\n{tools}\n\n"

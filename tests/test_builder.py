@@ -53,6 +53,7 @@ def test_build_agent_applies_system_message(monkeypatch):
     assert agent == "executor"
     template = captured["prompt"].template
     assert template.startswith("follow these rules")
+    assert "Start your response with 'Thought:'" in template
     assert "{tools}" in template and "{tool_names}" in template
     assert "{agent_scratchpad}" in template
     assert "{chat_history}" not in template

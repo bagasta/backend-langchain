@@ -4,7 +4,8 @@
 import os
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
-from langchain.agents import initialize_agent, AgentType
+from langchain.agents import create_react_agent, AgentExecutor
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 from pydantic import ValidationError
 from config.schema import AgentConfig
 from agents.tools.registry import get_tools_by_names
@@ -43,22 +44,19 @@ def build_agent(config: AgentConfig):
     # 3. Siapkan memory jika diaktifkan
     memory = get_memory_if_enabled(config.memory_enabled)
 
-    # 4. Inisialisasi agent berbasis Chat agar system_message diterapkan
-    agent_kwargs = {}
-    if config.system_message:
-        agent_kwargs["system_message"] = config.system_message
-
-    agent_type = AgentType.CHAT_ZERO_SHOT_REACT_DESCRIPTION
+    # 4. Bangun prompt dengan system message, optional memory, dan scratchpad
+    system_message = config.system_message or "You are a helpful assistant."
+    messages = [("system", system_message)]
     if memory:
-        agent_type = AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION
+        messages.append(MessagesPlaceholder("chat_history"))
+    messages.extend([
+        ("human", "{input}"),
+        MessagesPlaceholder("agent_scratchpad"),
+    ])
+    prompt = ChatPromptTemplate.from_messages(messages)
 
-    agent = initialize_agent(
-        tools=tools,
-        llm=llm,
-        agent=agent_type,
-        verbose=True,
-        memory=memory,
-        agent_kwargs=agent_kwargs or None,
-    )
+    # 5. Bangun agent ReAct dan bungkus dengan AgentExecutor
+    agent = create_react_agent(llm, tools, prompt)
+    executor = AgentExecutor(agent=agent, tools=tools, verbose=True, memory=memory)
 
-    return agent
+    return executor

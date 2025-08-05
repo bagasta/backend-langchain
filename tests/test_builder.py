@@ -1,7 +1,7 @@
 import pytest
+from langchain.prompts import MessagesPlaceholder
 from config.schema import AgentConfig
 from agents.builder import build_agent
-from langchain.agents import AgentType
 
 
 def test_build_agent_requires_api_key(monkeypatch):
@@ -26,12 +26,18 @@ def test_build_agent_applies_system_message(monkeypatch):
     def fake_chat_openai(**kwargs):
         return DummyLLM()
 
-    def fake_initialize_agent(**kwargs):
-        captured.update(kwargs)
+    def fake_create_react_agent(llm, tools, prompt):
+        captured["prompt"] = prompt
         return "agent"
 
+    def fake_agent_executor(agent, tools, verbose, memory=None):
+        captured["memory"] = memory
+        captured["agent"] = agent
+        return "executor"
+
     monkeypatch.setattr("agents.builder.ChatOpenAI", fake_chat_openai)
-    monkeypatch.setattr("agents.builder.initialize_agent", fake_initialize_agent)
+    monkeypatch.setattr("agents.builder.create_react_agent", fake_create_react_agent)
+    monkeypatch.setattr("agents.builder.AgentExecutor", fake_agent_executor)
 
     config = AgentConfig(
         model_name="gpt-4",
@@ -41,6 +47,7 @@ def test_build_agent_applies_system_message(monkeypatch):
     )
 
     agent = build_agent(config)
-    assert agent == "agent"
-    assert captured["agent"] == AgentType.CHAT_ZERO_SHOT_REACT_DESCRIPTION
-    assert captured["agent_kwargs"]["system_message"] == "follow these rules"
+    assert agent == "executor"
+    prompt_messages = captured["prompt"].messages
+    assert prompt_messages[0].prompt.template == "follow these rules"
+    assert isinstance(prompt_messages[-1], MessagesPlaceholder)

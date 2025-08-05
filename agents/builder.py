@@ -46,7 +46,21 @@ def build_agent(config: AgentConfig):
 
     # 4. Bangun prompt dengan system message, optional memory, dan scratchpad
     system_message = config.system_message or "You are a helpful assistant."
-    messages = [("system", system_message)]
+    system_template = (
+        f"{system_message}\n\n"
+        "You have access to the following tools:\n{tools}\n\n"
+        "Use the following format:\n"
+        "Question: the input question you must answer\n"
+        "Thought: you should always think about what to do\n"
+        "Action: the action to take, should be one of [{tool_names}]\n"
+        "Action Input: the input to the action\n"
+        "Observation: the result of the action\n"
+        "... (this Thought/Action/Action Input/Observation can repeat N times)\n"
+        "Thought: I now know the final answer\n"
+        "Final Answer: the final answer to the original input question"
+    )
+
+    messages = [("system", system_template)]
     if memory:
         messages.append(MessagesPlaceholder("chat_history"))
     messages.extend([

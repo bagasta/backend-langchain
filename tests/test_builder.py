@@ -49,5 +49,7 @@ def test_build_agent_applies_system_message(monkeypatch):
     agent = build_agent(config)
     assert agent == "executor"
     prompt_messages = captured["prompt"].messages
-    assert prompt_messages[0].prompt.template == "follow these rules"
+    system_template = prompt_messages[0].prompt.template
+    assert system_template.startswith("follow these rules")
+    assert "{tools}" in system_template and "{tool_names}" in system_template
     assert isinstance(prompt_messages[-1], MessagesPlaceholder)

@@ -9,3 +9,4 @@ class AgentConfig(BaseModel):
     system_message: str
     tools: List[str]
     memory_enabled: Optional[bool] = False
+    openai_api_key: Optional[str] = None

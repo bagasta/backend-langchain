@@ -1,6 +1,7 @@
 # Build agent from config
 # agents/builder.py
 
+import os
 from langchain.chat_models import ChatOpenAI
 from langchain.agents import initialize_agent, AgentType
 from langchain.schema import SystemMessage
@@ -16,8 +17,13 @@ def build_agent(config: AgentConfig):
     - tools (list nama tool)
     - memory_enabled (True/False)
     """
-    # 1. Inisiasi LLM
-    llm = ChatOpenAI(model_name=config.model_name, temperature=0)
+    # 1. Inisiasi LLM dengan API key yang diberikan atau dari environment
+    api_key = config.openai_api_key or os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "OpenAI API key not provided. Set OPENAI_API_KEY env var or include openai_api_key in config."
+        )
+    llm = ChatOpenAI(model_name=config.model_name, temperature=0, openai_api_key=api_key)
 
     # 2. Ambil tool dari registry sesuai nama
     tools = get_tools_by_names(config.tools)

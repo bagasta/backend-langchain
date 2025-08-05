@@ -6,7 +6,7 @@ Backend framework for building configurable LangChain agents through a REST API.
 - Python 3.10+
 - Node.js 18+
 - PostgreSQL (for Prisma ORM)
-- Environment variables such as `OPENAI_API_KEY` for LLM access
+- Environment variables such as `OPENAI_API_KEY` for LLM access (or pass `openai_api_key` in the request payload)
 
 ## Setup
 ```bash
@@ -28,7 +28,8 @@ curl -X POST http://localhost:8000/agents/{agent_id}/run \
           "model_name": "gpt-4",
           "system_message": "You are a helpful bot",
           "tools": ["calc"],
-          "memory_enabled": true
+          "memory_enabled": true,
+          "openai_api_key": "sk-..."
         },
         "message": "What is 2 + 2?"
       }'

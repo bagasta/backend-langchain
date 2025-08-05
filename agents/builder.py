@@ -5,7 +5,6 @@ import os
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain.agents import initialize_agent, AgentType
-from langchain.schema import SystemMessage
 from pydantic import ValidationError
 from config.schema import AgentConfig
 from agents.tools.registry import get_tools_by_names
@@ -47,7 +46,7 @@ def build_agent(config: AgentConfig):
     # 4. Inisialisasi agent berbasis Chat agar system_message diterapkan
     agent_kwargs = {}
     if config.system_message:
-        agent_kwargs["system_message"] = SystemMessage(content=config.system_message)
+        agent_kwargs["system_message"] = config.system_message
 
     agent_type = AgentType.CHAT_ZERO_SHOT_REACT_DESCRIPTION
     if memory:

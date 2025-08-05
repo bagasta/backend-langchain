@@ -43,4 +43,4 @@ def test_build_agent_applies_system_message(monkeypatch):
     agent = build_agent(config)
     assert agent == "agent"
     assert captured["agent"] == AgentType.CHAT_ZERO_SHOT_REACT_DESCRIPTION
-    assert captured["agent_kwargs"]["system_message"].content == "follow these rules"
+    assert captured["agent_kwargs"]["system_message"] == "follow these rules"

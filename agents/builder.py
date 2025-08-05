@@ -44,15 +44,19 @@ def build_agent(config: AgentConfig):
     # 3. Siapkan memory jika diaktifkan
     memory = get_memory_if_enabled(config.memory_enabled)
 
-    # 4. Inisialisasi agent
+    # 4. Inisialisasi agent berbasis Chat agar system_message diterapkan
     agent_kwargs = {}
     if config.system_message:
         agent_kwargs["system_message"] = SystemMessage(content=config.system_message)
 
+    agent_type = AgentType.CHAT_ZERO_SHOT_REACT_DESCRIPTION
+    if memory:
+        agent_type = AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION
+
     agent = initialize_agent(
         tools=tools,
         llm=llm,
-        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+        agent=agent_type,
         verbose=True,
         memory=memory,
         agent_kwargs=agent_kwargs or None,

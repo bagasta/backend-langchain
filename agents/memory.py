@@ -15,5 +15,5 @@ def get_memory_if_enabled(enabled: bool) -> Optional[BaseChatMemory]:
     """
     if not enabled:
         return None
-    # return messages so chat history is preserved across turns
-    return ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+    # return a standard buffer that stores history as a string
+    return ConversationBufferMemory(memory_key="chat_history")

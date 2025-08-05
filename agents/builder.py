@@ -5,7 +5,7 @@ import os
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_react_agent, AgentExecutor
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.prompts import PromptTemplate
 from pydantic import ValidationError
 from config.schema import AgentConfig
 from agents.tools.registry import get_tools_by_names
@@ -46,7 +46,7 @@ def build_agent(config: AgentConfig):
 
     # 4. Bangun prompt dengan system message, optional memory, dan scratchpad
     system_message = config.system_message or "You are a helpful assistant."
-    system_template = (
+    template = (
         f"{system_message}\n\n"
         "You have access to the following tools:\n{tools}\n\n"
         "Use the following format:\n"
@@ -57,17 +57,12 @@ def build_agent(config: AgentConfig):
         "Observation: the result of the action\n"
         "... (this Thought/Action/Action Input/Observation can repeat N times)\n"
         "Thought: I now know the final answer\n"
-        "Final Answer: the final answer to the original input question"
+        "Final Answer: the final answer to the original input question\n"
     )
-
-    messages = [("system", system_template)]
     if memory:
-        messages.append(MessagesPlaceholder("chat_history"))
-    messages.extend([
-        ("human", "{input}"),
-        MessagesPlaceholder("agent_scratchpad"),
-    ])
-    prompt = ChatPromptTemplate.from_messages(messages)
+        template += "{chat_history}\n"
+    template += "Question: {input}\nThought:{agent_scratchpad}"
+    prompt = PromptTemplate.from_template(template)
 
     # 5. Bangun agent ReAct dan bungkus dengan AgentExecutor
     agent = create_react_agent(llm, tools, prompt)

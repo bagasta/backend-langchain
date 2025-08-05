@@ -1,5 +1,4 @@
 import pytest
-from langchain.prompts import MessagesPlaceholder
 from config.schema import AgentConfig
 from agents.builder import build_agent
 
@@ -48,8 +47,8 @@ def test_build_agent_applies_system_message(monkeypatch):
 
     agent = build_agent(config)
     assert agent == "executor"
-    prompt_messages = captured["prompt"].messages
-    system_template = prompt_messages[0].prompt.template
-    assert system_template.startswith("follow these rules")
-    assert "{tools}" in system_template and "{tool_names}" in system_template
-    assert isinstance(prompt_messages[-1], MessagesPlaceholder)
+    template = captured["prompt"].template
+    assert template.startswith("follow these rules")
+    assert "{tools}" in template and "{tool_names}" in template
+    assert "{agent_scratchpad}" in template
+    assert "{chat_history}" not in template

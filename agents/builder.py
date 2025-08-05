@@ -5,6 +5,7 @@ import os
 from langchain.chat_models import ChatOpenAI
 from langchain.agents import initialize_agent, AgentType
 from langchain.schema import SystemMessage
+from pydantic import ValidationError
 from config.schema import AgentConfig
 from agents.tools.registry import get_tools_by_names
 from agents.memory import get_memory_if_enabled
@@ -23,7 +24,16 @@ def build_agent(config: AgentConfig):
         raise ValueError(
             "OpenAI API key not provided. Set OPENAI_API_KEY env var or include openai_api_key in config."
         )
-    llm = ChatOpenAI(model_name=config.model_name, temperature=0, openai_api_key=api_key)
+    try:
+        llm = ChatOpenAI(
+            model_name=config.model_name,
+            temperature=0,
+            openai_api_key=api_key,
+        )
+    except ValidationError as exc:
+        raise ValueError(
+            "OpenAI API key not provided. Set OPENAI_API_KEY env var or include openai_api_key in config."
+        ) from exc
 
     # 2. Ambil tool dari registry sesuai nama
     tools = get_tools_by_names(config.tools)

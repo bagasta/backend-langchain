@@ -25,6 +25,8 @@ async def run_agent(agent_id: str, payload: RunAgentRequest):
     # untuk sekarang kita stub config langsung dari payload
     try:
         result = run_custom_agent(payload.config, payload.message)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # pragma: no cover - runtime errors
         raise HTTPException(status_code=500, detail=str(exc))
     return {"response": result}

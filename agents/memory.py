@@ -1,7 +1,8 @@
 """Memory utilities for agents."""
 
 from typing import Optional
-from langchain.memory import ConversationBufferMemory, BaseChatMemory
+from langchain.memory import ConversationBufferMemory
+from langchain.memory.chat_memory import BaseChatMemory
 
 
 def get_memory_if_enabled(enabled: bool) -> Optional[BaseChatMemory]:

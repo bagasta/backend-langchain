@@ -3,6 +3,7 @@
 
 from langchain.chat_models import ChatOpenAI
 from langchain.agents import initialize_agent, AgentType
+from langchain.schema import SystemMessage
 from config.schema import AgentConfig
 from agents.tools.registry import get_tools_by_names
 from agents.memory import get_memory_if_enabled
@@ -25,12 +26,17 @@ def build_agent(config: AgentConfig):
     memory = get_memory_if_enabled(config.memory_enabled)
 
     # 4. Inisialisasi agent
+    agent_kwargs = {}
+    if config.system_message:
+        agent_kwargs["system_message"] = SystemMessage(content=config.system_message)
+
     agent = initialize_agent(
         tools=tools,
         llm=llm,
         agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
         verbose=True,
-        memory=memory
+        memory=memory,
+        agent_kwargs=agent_kwargs or None,
     )
 
     return agent

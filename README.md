@@ -31,8 +31,9 @@ curl -X POST http://localhost:8000/agents/ \
         "config": {
           "model_name": "gpt-4",
           "system_message": "You are a helpful bot",
-          "tools": ["calc"],
+          "tools": ["calc", "google"],
           "memory_enabled": true,
+          "agent_type": "openai-functions",
           "max_iterations": 25
         }
       }'
@@ -49,6 +50,8 @@ curl -X POST http://localhost:8000/agents/{agent_id}/run \
 ```
 
 Both endpoints accept optional limits: set `max_iterations` or `max_execution_time` in the agent configuration to control how long an agent may run before aborting.
+
+The `agent_type` field accepts any value from LangChain's [`AgentType` enumeration](https://api.python.langchain.com/en/latest/agents/langchain.agents.agent_types.AgentType.html), enabling different execution strategies beyond the default ReAct-style agent.
 
 ## Extending
 - **Tools**: add a module under `agents/tools/` and register it in `agents/tools/registry.py`.

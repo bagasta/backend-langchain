@@ -30,7 +30,7 @@ def create_agent_record(owner_id: str, name: str, config: AgentConfig) -> str:
         {
             "ownerId": owner_id,
             "name": name,
-            "config": config.model_dump(),
+            "config": config.model_dump(exclude={"openai_api_key"}),
         },
     )
     return data["id"]
@@ -38,9 +38,16 @@ def create_agent_record(owner_id: str, name: str, config: AgentConfig) -> str:
 
 def get_agent_config(agent_id: str) -> AgentConfig:
     data = _run("get", {"agent_id": agent_id})
-    return AgentConfig(
-        model_name=data["modelName"],
-        system_message=data["systemMessage"],
-        tools=data["tools"],
-        memory_enabled=data["memoryEnabled"],
-    )
+    payload = {
+        "model_name": data["modelName"],
+        "system_message": data["systemMessage"],
+        "tools": data["tools"],
+        "memory_enabled": data["memoryEnabled"],
+    }
+    if data.get("agentType") is not None:
+        payload["agent_type"] = data["agentType"]
+    if data.get("maxIterations") is not None:
+        payload["max_iterations"] = data["maxIterations"]
+    if data.get("maxExecutionTime") is not None:
+        payload["max_execution_time"] = data["maxExecutionTime"]
+    return AgentConfig(**payload)

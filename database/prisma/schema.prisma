@@ -26,5 +26,8 @@ model Agent {
   systemMessage  String     // prompt dasar agent
   tools          String[]   // misal: ["google", "calc"]
   memoryEnabled  Boolean    @default(false)
+  agentType      String     @default("chat-conversational-react-description")
+  maxIterations  Int?
+  maxExecutionTime Float?
   createdAt      DateTime   @default(now())
 }

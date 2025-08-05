@@ -4,8 +4,7 @@
 import os
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
-from langchain.agents import create_react_agent, AgentExecutor
-from langchain.prompts import PromptTemplate
+from langchain.agents import initialize_agent, AgentType
 from pydantic import ValidationError
 from config.schema import AgentConfig
 from agents.tools.registry import get_tools_by_names
@@ -13,15 +12,24 @@ from agents.memory import get_memory_if_enabled
 
 load_dotenv()
 
+
+def _resolve_agent_type(agent_type_str: str) -> AgentType:
+    """Map a string to a LangChain AgentType."""
+    if not agent_type_str:
+        return AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION
+    try:
+        return AgentType(agent_type_str)
+    except ValueError:
+        try:
+            return AgentType[agent_type_str.upper()]
+        except KeyError as exc:  # pragma: no cover - defensive
+            raise ValueError(f"Unsupported agent type: {agent_type_str}") from exc
+
+
 def build_agent(config: AgentConfig):
-    """
-    Membangun LangChain agent berdasarkan AgentConfig:
-    - model_name (mis. "gpt-4")
-    - system_message (prompt awal system)
-    - tools (list nama tool)
-    - memory_enabled (True/False)
-    """
-    # 1. Inisiasi LLM dengan API key yang diberikan atau dari environment
+    """Construct a LangChain agent executor from the provided configuration."""
+
+    # 1. Initialize LLM with provided or environment API key
     api_key = config.openai_api_key or os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise ValueError(
@@ -38,43 +46,24 @@ def build_agent(config: AgentConfig):
             "OpenAI API key not provided. Set OPENAI_API_KEY env var or include openai_api_key in config."
         ) from exc
 
-    # 2. Ambil tool dari registry sesuai nama
+    # 2. Gather tools from registry
     tools = get_tools_by_names(config.tools)
 
-    # 3. Siapkan memory jika diaktifkan
+    # 3. Optional memory
     memory = get_memory_if_enabled(config.memory_enabled)
 
-    # 4. Bangun prompt dengan system message, optional memory, dan scratchpad
-    system_message = config.system_message or "You are a helpful assistant."
-    system_message += (
-        "\nStart your response with 'Thought:' and strictly follow the format instructions below. "
-        "Do not output any text before the first 'Thought:' line. If the system message requests "
-        "stylistic phrases, include them in the 'Final Answer' only."
-    )
+    # 4. Resolve agent type and pass system message
+    agent_type = _resolve_agent_type(config.agent_type)
+    agent_kwargs = {}
+    if config.system_message:
+        agent_kwargs["system_message"] = config.system_message
 
-    template = (
-        f"{system_message}\n\n"
-        "You have access to the following tools:\n{tools}\n\n"
-        "Use the following format:\n"
-        "Question: the input question you must answer\n"
-        "Thought: you should always think about what to do\n"
-        "Action: the action to take, should be one of [{tool_names}]\n"
-        "Action Input: the input to the action\n"
-        "Observation: the result of the action\n"
-        "... (this Thought/Action/Action Input/Observation can repeat N times)\n"
-        "Thought: I now know the final answer\n"
-        "Final Answer: the final answer to the original input question\n"
-    )
-    if memory:
-        template += "{chat_history}\n"
-    template += "Question: {input}\nThought:{agent_scratchpad}"
-    prompt = PromptTemplate.from_template(template)
-
-    # 5. Bangun agent ReAct dan bungkus dengan AgentExecutor
-    agent = create_react_agent(llm, tools, prompt)
-    executor = AgentExecutor(
-        agent=agent,
+    # 5. Initialize agent executor capable of multiple tool invocations
+    executor = initialize_agent(
         tools=tools,
+        llm=llm,
+        agent=agent_type,
+        agent_kwargs=agent_kwargs,
         verbose=True,
         memory=memory,
         handle_parsing_errors=True,

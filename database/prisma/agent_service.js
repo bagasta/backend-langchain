@@ -35,6 +35,9 @@ async function main() {
         systemMessage: payload.config.system_message,
         tools: payload.config.tools,
         memoryEnabled: payload.config.memory_enabled ?? false,
+        agentType: payload.config.agent_type,
+        maxIterations: payload.config.max_iterations,
+        maxExecutionTime: payload.config.max_execution_time,
       },
     });
     console.log(JSON.stringify(agent));

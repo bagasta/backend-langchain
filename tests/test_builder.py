@@ -1,5 +1,8 @@
 import pytest
 from config.schema import AgentConfig
+import pytest
+from langchain.agents import AgentType
+from config.schema import AgentConfig
 from agents.builder import build_agent
 
 
@@ -25,38 +28,25 @@ def test_build_agent_applies_system_message(monkeypatch):
     def fake_chat_openai(**kwargs):
         return DummyLLM()
 
-    def fake_create_react_agent(llm, tools, prompt):
-        captured["prompt"] = prompt
-        return "agent"
-
-    def fake_agent_executor(
-        agent, tools, verbose, memory=None, handle_parsing_errors=False, **kwargs
-    ):
-        captured["memory"] = memory
-        captured["agent"] = agent
-        captured["handle_parsing_errors"] = handle_parsing_errors
-        captured["extra"] = kwargs
+    def fake_initialize_agent(**kwargs):
+        captured.update(kwargs)
         return "executor"
 
     monkeypatch.setattr("agents.builder.ChatOpenAI", fake_chat_openai)
-    monkeypatch.setattr("agents.builder.create_react_agent", fake_create_react_agent)
-    monkeypatch.setattr("agents.builder.AgentExecutor", fake_agent_executor)
+    monkeypatch.setattr("agents.builder.initialize_agent", fake_initialize_agent)
 
     config = AgentConfig(
         model_name="gpt-4",
         system_message="follow these rules",
         tools=[],
         memory_enabled=False,
+        agent_type="openai-functions",
     )
 
     agent = build_agent(config)
     assert agent == "executor"
-    template = captured["prompt"].template
-    assert template.startswith("follow these rules")
-    assert "Start your response with 'Thought:'" in template
-    assert "{tools}" in template and "{tool_names}" in template
-    assert "{agent_scratchpad}" in template
-    assert "{chat_history}" not in template
+    assert captured["agent"] == AgentType.OPENAI_FUNCTIONS
+    assert captured["agent_kwargs"]["system_message"] == "follow these rules"
     assert captured["handle_parsing_errors"] is True
 
 
@@ -69,12 +59,11 @@ def test_build_agent_sets_iteration_limits(monkeypatch):
             self.max_execution_time = max_execution_time
 
     monkeypatch.setattr("agents.builder.ChatOpenAI", lambda **_: object())
-    monkeypatch.setattr("agents.builder.create_react_agent", lambda llm, tools, prompt: "agent")
 
-    def fake_agent_executor(**kwargs):
+    def fake_initialize_agent(**kwargs):
         return DummyExecutor(**kwargs)
 
-    monkeypatch.setattr("agents.builder.AgentExecutor", fake_agent_executor)
+    monkeypatch.setattr("agents.builder.initialize_agent", fake_initialize_agent)
 
     config = AgentConfig(
         model_name="gpt-4",
@@ -88,3 +77,18 @@ def test_build_agent_sets_iteration_limits(monkeypatch):
     executor = build_agent(config)
     assert executor.max_iterations == 5
     assert executor.max_execution_time == 30
+
+
+def test_build_agent_rejects_bad_agent_type(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    monkeypatch.setattr("agents.builder.ChatOpenAI", lambda **_: object())
+    with pytest.raises(ValueError, match="Unsupported agent type"):
+        build_agent(
+            AgentConfig(
+                model_name="gpt-4",
+                system_message="hi",
+                tools=[],
+                memory_enabled=False,
+                agent_type="unknown-agent",
+            )
+        )

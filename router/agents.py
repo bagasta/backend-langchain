@@ -4,27 +4,39 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from config.schema import AgentConfig
 from agents.runner import run_custom_agent
-# note: nanti load config dari DB via Prisma microservice
+from database.client import create_agent_record, get_agent_config
 
 router = APIRouter()
 
 
 class RunAgentRequest(BaseModel):
     """Payload model for running an agent."""
-    config: AgentConfig
     message: str
+    openai_api_key: str | None = None
 
-@router.post("/", summary="(Stub) Create an agent")
-async def create_agent(config: AgentConfig):
-    # TODO: panggil microservice Prisma untuk simpan config
-    return {"agent_id": "stub-id"}
+
+class CreateAgentRequest(BaseModel):
+    """Payload model for creating an agent."""
+    owner_id: str
+    name: str
+    config: AgentConfig
+
+
+@router.post("/", summary="Create an agent")
+async def create_agent(payload: CreateAgentRequest):
+    try:
+        agent_id = create_agent_record(payload.owner_id, payload.name, payload.config)
+    except Exception as exc:  # pragma: no cover - DB errors
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"agent_id": agent_id}
 
 @router.post("/{agent_id}/run", summary="Run an agent by ID")
 async def run_agent(agent_id: str, payload: RunAgentRequest):
-    # TODO: fetch config dari DB (Prisma) berdasarkan agent_id
-    # untuk sekarang kita stub config langsung dari payload
     try:
-        result = run_custom_agent(payload.config, payload.message)
+        config = get_agent_config(agent_id)
+        if payload.openai_api_key:
+            config.openai_api_key = payload.openai_api_key
+        result = run_custom_agent(config, payload.message)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # pragma: no cover - runtime errors

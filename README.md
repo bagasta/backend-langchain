@@ -12,6 +12,7 @@ Backend framework for building configurable LangChain agents through a REST API.
 ```bash
 pip install -r requirements.txt
 npm install
+cd database/prisma && npx prisma migrate deploy && cd ../..
 ```
 
 ## Running the API
@@ -20,18 +21,29 @@ uvicorn main:app --reload
 ```
 
 ## Example Usage
+Create an agent:
 ```bash
-curl -X POST http://localhost:8000/agents/{agent_id}/run \
+curl -X POST http://localhost:8000/agents/ \
   -H 'Content-Type: application/json' \
   -d '{
+        "owner_id": "user1",
+        "name": "demo",
         "config": {
           "model_name": "gpt-4",
           "system_message": "You are a helpful bot",
           "tools": ["calc"],
-          "memory_enabled": true,
-          "openai_api_key": "sk-..."
-        },
-        "message": "What is 2 + 2?"
+          "memory_enabled": true
+        }
+      }'
+```
+
+Run the agent by ID:
+```bash
+curl -X POST http://localhost:8000/agents/{agent_id}/run \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "message": "What is 2 + 2?",
+        "openai_api_key": "sk-..."
       }'
 ```
 

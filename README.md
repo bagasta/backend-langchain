@@ -15,6 +15,9 @@ npm install
 cd database/prisma && npx prisma migrate deploy && cd ../..
 ```
 
+The Python database wrapper automatically runs `prisma migrate deploy` and `prisma generate` before each operation to keep the
+Prisma client in sync with the schema. Still, ensure your PostgreSQL instance is reachable via `DATABASE_URL`.
+
 ## Running the API
 ```bash
 uvicorn main:app --reload

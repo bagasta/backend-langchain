@@ -10,6 +10,18 @@ SCRIPT = PRISMA_DIR / "agent_service.js"
 
 def _run(command: str, payload: dict) -> dict:
     try:
+        subprocess.run(
+            ["npx", "prisma", "migrate", "deploy"],
+            cwd=str(PRISMA_DIR),
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["npx", "prisma", "generate"],
+            cwd=str(PRISMA_DIR),
+            capture_output=True,
+            check=True,
+        )
         result = subprocess.run(
             ["node", str(SCRIPT), command],
             cwd=str(PRISMA_DIR),

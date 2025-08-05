@@ -10,7 +10,7 @@ def _search(query: str) -> str:
 
 
 google_search_tool = Tool(
-    name="Google Search",
+    name="google_search",
     func=_search,
     description="Search the web for up-to-date information"
 )

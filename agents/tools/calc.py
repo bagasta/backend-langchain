@@ -14,7 +14,7 @@ def _evaluate(expression: str) -> str:
 
 
 calc_tool = Tool(
-    name="Calculator",
+    name="calculator",
     func=_evaluate,
     description="Evaluate basic math expressions, e.g. '2 + 2'"
 )

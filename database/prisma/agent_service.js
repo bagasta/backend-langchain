@@ -16,6 +16,17 @@ async function main() {
   const payload = await readStdin();
 
   if (command === 'create') {
+    // Ensure the owner exists; create a placeholder user if missing
+    await prisma.user.upsert({
+      where: { id: payload.ownerId },
+      update: {},
+      create: {
+        id: payload.ownerId,
+        email: `${payload.ownerId}@example.com`,
+        name: payload.ownerId,
+      },
+    });
+
     const agent = await prisma.agent.create({
       data: {
         ownerId: payload.ownerId,

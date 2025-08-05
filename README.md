@@ -26,7 +26,7 @@ Create an agent:
 curl -X POST http://localhost:8000/agents/ \
   -H 'Content-Type: application/json' \
   -d '{
-        "owner_id": "user1",
+        "owner_id": "user1",  # a placeholder user is auto-created if this ID doesn't exist
         "name": "demo",
         "config": {
           "model_name": "gpt-4",

@@ -10,5 +10,10 @@ def run_custom_agent(config: AgentConfig, message: str) -> str:
     agent = build_agent(config)
     result = agent.invoke({"input": message})
     if isinstance(result, dict):
-        return result.get("output", "")
+        result = result.get("output", "")
+    if result == "Agent stopped due to iteration limit or time limit.":
+        raise ValueError(
+            "Agent execution stopped before producing a final answer. "
+            "Consider increasing max_iterations or revising the prompt."
+        )
     return result

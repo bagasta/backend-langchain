@@ -32,7 +32,8 @@ curl -X POST http://localhost:8000/agents/ \
           "model_name": "gpt-4",
           "system_message": "You are a helpful bot",
           "tools": ["calc"],
-          "memory_enabled": true
+          "memory_enabled": true,
+          "max_iterations": 25
         }
       }'
 ```
@@ -46,6 +47,8 @@ curl -X POST http://localhost:8000/agents/{agent_id}/run \
         "openai_api_key": "sk-..."
       }'
 ```
+
+Both endpoints accept optional limits: set `max_iterations` or `max_execution_time` in the agent configuration to control how long an agent may run before aborting.
 
 ## Extending
 - **Tools**: add a module under `agents/tools/` and register it in `agents/tools/registry.py`.

@@ -10,3 +10,5 @@ class AgentConfig(BaseModel):
     tools: List[str]
     memory_enabled: Optional[bool] = False
     openai_api_key: Optional[str] = None
+    max_iterations: Optional[int] = None
+    max_execution_time: Optional[float] = None

@@ -72,6 +72,8 @@ def build_agent(config: AgentConfig):
         verbose=True,
         memory=memory,
         handle_parsing_errors=True,
+        max_iterations=config.max_iterations,
+        max_execution_time=config.max_execution_time,
     )
 
     return executor

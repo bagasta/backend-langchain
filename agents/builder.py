@@ -66,6 +66,12 @@ def build_agent(config: AgentConfig):
 
     # 5. Bangun agent ReAct dan bungkus dengan AgentExecutor
     agent = create_react_agent(llm, tools, prompt)
-    executor = AgentExecutor(agent=agent, tools=tools, verbose=True, memory=memory)
+    executor = AgentExecutor(
+        agent=agent,
+        tools=tools,
+        verbose=True,
+        memory=memory,
+        handle_parsing_errors=True,
+    )
 
     return executor

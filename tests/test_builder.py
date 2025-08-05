@@ -29,9 +29,12 @@ def test_build_agent_applies_system_message(monkeypatch):
         captured["prompt"] = prompt
         return "agent"
 
-    def fake_agent_executor(agent, tools, verbose, memory=None):
+    def fake_agent_executor(
+        agent, tools, verbose, memory=None, handle_parsing_errors=False
+    ):
         captured["memory"] = memory
         captured["agent"] = agent
+        captured["handle_parsing_errors"] = handle_parsing_errors
         return "executor"
 
     monkeypatch.setattr("agents.builder.ChatOpenAI", fake_chat_openai)
@@ -52,3 +55,4 @@ def test_build_agent_applies_system_message(monkeypatch):
     assert "{tools}" in template and "{tool_names}" in template
     assert "{agent_scratchpad}" in template
     assert "{chat_history}" not in template
+    assert captured["handle_parsing_errors"] is True

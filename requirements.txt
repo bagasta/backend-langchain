@@ -1,7 +1,9 @@
 langchain
 langchain-community
+langchain-openai
 openai
 fastapi
 uvicorn
 pydantic
 pytest
+python-dotenv

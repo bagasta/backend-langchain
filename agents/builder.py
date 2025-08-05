@@ -2,13 +2,16 @@
 # agents/builder.py
 
 import os
-from langchain.chat_models import ChatOpenAI
+from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
 from langchain.agents import initialize_agent, AgentType
 from langchain.schema import SystemMessage
 from pydantic import ValidationError
 from config.schema import AgentConfig
 from agents.tools.registry import get_tools_by_names
 from agents.memory import get_memory_if_enabled
+
+load_dotenv()
 
 def build_agent(config: AgentConfig):
     """

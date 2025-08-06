@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from typing import Any, Dict
 
 import gspread
@@ -13,8 +14,8 @@ def _spreadsheet_action(input_str: str) -> str:
 
     Expected JSON input with at least:
     - action: one of 'read', 'add', 'update', 'clear'
-    - spreadsheet_id: target sheet ID
-    - worksheet: worksheet title or index (optional, default 'Sheet1')
+    - spreadsheet_id or spreadsheet_url: target sheet identifier
+    - worksheet: worksheet title or index (optional)
     Additional fields depend on action:
       * read: optional 'range'
       * add: values -> list of values to append
@@ -27,7 +28,15 @@ def _spreadsheet_action(input_str: str) -> str:
     params: Dict[str, Any] = json.loads(input_str)
     action = params.get("action")
     spreadsheet_id = params.get("spreadsheet_id")
-    worksheet_ref = params.get("worksheet", "Sheet1")
+    if not spreadsheet_id:
+        url = params.get("spreadsheet_url")
+        if url:
+            match = re.search(r"/d/([a-zA-Z0-9-_]+)", url)
+            if match:
+                spreadsheet_id = match.group(1)
+    if not spreadsheet_id:
+        spreadsheet_id = os.getenv("SPREADSHEET_ID")
+    worksheet_ref = params.get("worksheet")
     if not action or not spreadsheet_id:
         raise ValueError("'action' and 'spreadsheet_id' are required")
 
@@ -37,11 +46,16 @@ def _spreadsheet_action(input_str: str) -> str:
 
     client = gspread.service_account(filename=creds_path)
     sheet = client.open_by_key(spreadsheet_id)
-    # determine worksheet
-    if isinstance(worksheet_ref, int):
+
+    worksheets = {ws.title.lower(): ws for ws in sheet.worksheets()}
+    if worksheet_ref is None:
+        ws = sheet.get_worksheet(0)
+    elif isinstance(worksheet_ref, int):
         ws = sheet.get_worksheet(worksheet_ref)
     else:
-        ws = sheet.worksheet(worksheet_ref)
+        ws = worksheets.get(str(worksheet_ref).lower())
+        if ws is None:
+            raise ValueError(f"worksheet '{worksheet_ref}' not found")
 
     if action == "read":
         rng = params.get("range")
@@ -78,8 +92,8 @@ spreadsheet_tool = Tool(
     func=_spreadsheet_action,
     description=(
         "Interact with Google Sheets. Input is JSON with fields: action"
-        " ('read','add','update','clear'), spreadsheet_id, worksheet (title or index),"
-        " and action-specific params."),
+        " ('read','add','update','clear'), spreadsheet_id or spreadsheet_url,"
+        " worksheet (title or index; default first sheet), and action-specific params."),
 )
 
 __all__ = ["spreadsheet_tool"]

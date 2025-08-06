@@ -42,6 +42,9 @@ def test_spreadsheet_tool(monkeypatch):
     calls = []
 
     class FakeWorksheet:
+        def __init__(self, title="Sheet1"):
+            self.title = title
+
         def get_all_values(self):
             return [["a", "b"]]
 
@@ -58,11 +61,20 @@ def test_spreadsheet_tool(monkeypatch):
             calls.append(("clear", ranges))
 
     class FakeSheet:
+        def __init__(self):
+            self._worksheets = [FakeWorksheet("Sheet1"), FakeWorksheet("Sheet2")]
+
         def worksheet(self, name):
-            return FakeWorksheet()
+            for ws in self._worksheets:
+                if ws.title == name:
+                    return ws
+            raise KeyError(name)
 
         def get_worksheet(self, index):
-            return FakeWorksheet()
+            return self._worksheets[index]
+
+        def worksheets(self):
+            return self._worksheets
 
     class FakeClient:
         def open_by_key(self, key):
@@ -72,28 +84,27 @@ def test_spreadsheet_tool(monkeypatch):
         return FakeClient()
 
     monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "creds.json")
+    monkeypatch.setenv("SPREADSHEET_ID", "id")
     monkeypatch.setattr(gspread, "service_account", fake_service_account)
 
-    # read all values
-    res = spreadsheet_tool.func(json.dumps({"action": "read", "spreadsheet_id": "id"}))
+    # read all values using default spreadsheet id and automatic first sheet
+    res = spreadsheet_tool.func(json.dumps({"action": "read"}))
     assert res == json.dumps([["a", "b"]])
 
     # add row
     spreadsheet_tool.func(
-        json.dumps({"action": "add", "spreadsheet_id": "id", "values": [1, 2]})
+        json.dumps({"action": "add", "values": [1, 2], "worksheet": "sheet1"})
     )
     assert ("add", [1, 2]) in calls
 
     # update
     spreadsheet_tool.func(
-        json.dumps({"action": "update", "spreadsheet_id": "id", "range": "A1", "values": 5})
+        json.dumps({"action": "update", "range": "A1", "values": 5})
     )
     assert ("update", "A1", 5) in calls
 
     # clear
-    spreadsheet_tool.func(
-        json.dumps({"action": "clear", "spreadsheet_id": "id", "range": "A1"})
-    )
+    spreadsheet_tool.func(json.dumps({"action": "clear", "range": "A1"}))
     assert ("clear", ["A1"]) in calls
 
     assert re.fullmatch(r"[A-Za-z0-9_-]+", spreadsheet_tool.name)

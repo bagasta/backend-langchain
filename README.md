@@ -8,7 +8,9 @@ Backend framework for building configurable LangChain agents through a REST API.
 - PostgreSQL (for Prisma ORM)
 - PostgreSQL driver (`psycopg2-binary` is included in `requirements.txt`)
 - Environment variables such as `OPENAI_API_KEY` for LLM access (or pass `openai_api_key` in the request payload). Values from a `.env` file are loaded automatically.
-- For the `spreadsheet` tool, `GOOGLE_APPLICATION_CREDENTIALS` must point to a Google service-account JSON.
+- For the `spreadsheet` tool, `GOOGLE_APPLICATION_CREDENTIALS` must point to a Google service-account JSON. Optionally set
+  `SPREADSHEET_ID` to avoid passing the sheet ID in every request; worksheet names are matched case-insensitively and default to
+  the first sheet when omitted.
 
 ## Setup
 ```bash

@@ -4,8 +4,12 @@
 import os
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
-from langchain.agents import AgentExecutor, AgentType, create_react_agent
+from langchain.agents import AgentExecutor, AgentType
+from langchain.agents.format_scratchpad import format_log_to_messages
+from langchain.agents.output_parsers import ReActSingleInputOutputParser
+from langchain.tools.render import render_text_description
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables import RunnablePassthrough
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from pydantic import ValidationError
 from config.schema import AgentConfig
@@ -46,10 +50,11 @@ def build_agent(config: AgentConfig):
     )
     prompt_messages = [
         ("system", system_template),
-        MessagesPlaceholder("chat_history"),
         ("human", "{input}"),
         MessagesPlaceholder("agent_scratchpad"),
     ]
+    if config.memory_enabled:
+        prompt_messages.insert(1, MessagesPlaceholder("chat_history"))
     prompt = ChatPromptTemplate.from_messages(prompt_messages).partial(
         system_message=config.system_message
     )
@@ -64,10 +69,29 @@ def build_agent(config: AgentConfig):
             f"Unsupported agent type: {config.agent_type.value}"
         )
 
-    # 5. Create ReAct agent and executor
-    agent = create_react_agent(llm, tools, prompt)
+    # 5. Inject tool metadata and build ReAct agent that keeps scratchpad as messages
+    missing = {"tools", "tool_names", "agent_scratchpad"}.difference(
+        prompt.input_variables + list(prompt.partial_variables)
+    )
+    if missing:
+        raise ValueError(f"Prompt missing required variables: {missing}")
+
+    prompt = prompt.partial(
+        tools=render_text_description(list(tools)),
+        tool_names=", ".join([t.name for t in tools]),
+    )
+
+    agent_chain = (
+        RunnablePassthrough.assign(
+            agent_scratchpad=lambda x: format_log_to_messages(x["intermediate_steps"])
+        )
+        | prompt
+        | llm
+        | ReActSingleInputOutputParser()
+    )
+
     executor = AgentExecutor(
-        agent=agent,
+        agent=agent_chain,
         tools=tools,
         verbose=True,
         handle_parsing_errors=True,

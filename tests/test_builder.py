@@ -21,23 +21,15 @@ def test_build_agent_applies_system_message(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "key")
     captured = {}
 
-    class DummyLLM:
-        pass
-
     def fake_chat_openai(**kwargs):
-        return DummyLLM()
-
-    def fake_create_react_agent(llm, tools, prompt):
-        captured["prompt"] = prompt
-        return "agent"
+        return lambda *_args, **_kwargs: "ok"
 
     def fake_agent_executor(agent, tools, **kwargs):
         captured["executor_kwargs"] = kwargs
-        captured["agent_passed"] = agent
+        captured["agent"] = agent
         return "executor"
 
     monkeypatch.setattr("agents.builder.ChatOpenAI", fake_chat_openai)
-    monkeypatch.setattr("agents.builder.create_react_agent", fake_create_react_agent)
     monkeypatch.setattr("agents.builder.AgentExecutor", fake_agent_executor)
 
     config = AgentConfig(
@@ -49,12 +41,13 @@ def test_build_agent_applies_system_message(monkeypatch):
 
     agent = build_agent(config)
     assert agent == "executor"
-    assert isinstance(captured["prompt"], ChatPromptTemplate)
+    prompt = captured["agent"].steps[1]
+    assert isinstance(prompt, ChatPromptTemplate)
     assert captured["executor_kwargs"]["handle_parsing_errors"] is True
-    template = captured["prompt"].messages[0].prompt.template
+    template = prompt.messages[0].prompt.template
     assert "{tools}" in template
     assert "{tool_names}" in template
-    assert captured["prompt"].partial_variables["system_message"] == "follow these rules"
+    assert prompt.partial_variables["system_message"] == "follow these rules"
 
 
 def test_build_agent_sets_iteration_limits(monkeypatch):
@@ -65,15 +58,11 @@ def test_build_agent_sets_iteration_limits(monkeypatch):
             self.max_iterations = max_iterations
             self.max_execution_time = max_execution_time
 
-    monkeypatch.setattr("agents.builder.ChatOpenAI", lambda **_: object())
-
-    def fake_create_react_agent(llm, tools, prompt):
-        return "agent"
+    monkeypatch.setattr("agents.builder.ChatOpenAI", lambda **_: (lambda *_a, **_k: "ok"))
 
     def fake_agent_executor(agent, tools, **kwargs):
         return DummyExecutor(**kwargs)
 
-    monkeypatch.setattr("agents.builder.create_react_agent", fake_create_react_agent)
     monkeypatch.setattr("agents.builder.AgentExecutor", fake_agent_executor)
 
     config = AgentConfig(
@@ -107,8 +96,9 @@ def test_build_agent_rejects_bad_agent_type(monkeypatch):
 
 def test_build_agent_accepts_chat_zero_shot(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "key")
-    monkeypatch.setattr("agents.builder.ChatOpenAI", lambda **_: object())
-    monkeypatch.setattr("agents.builder.create_react_agent", lambda *args, **kwargs: "agent")
+    monkeypatch.setattr(
+        "agents.builder.ChatOpenAI", lambda **_: (lambda *_a, **_k: "ok")
+    )
     monkeypatch.setattr("agents.builder.AgentExecutor", lambda **kwargs: "executor")
 
     config = AgentConfig(

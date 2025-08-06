@@ -1,4 +1,5 @@
 import pytest
+from langchain.agents import AgentType
 from langchain_core.prompts import ChatPromptTemplate
 from config.schema import AgentConfig
 from agents.builder import build_agent
@@ -50,6 +51,10 @@ def test_build_agent_applies_system_message(monkeypatch):
     assert agent == "executor"
     assert isinstance(captured["prompt"], ChatPromptTemplate)
     assert captured["executor_kwargs"]["handle_parsing_errors"] is True
+    template = captured["prompt"].messages[0].prompt.template
+    assert "{tools}" in template
+    assert "{tool_names}" in template
+    assert captured["prompt"].partial_variables["system_message"] == "follow these rules"
 
 
 def test_build_agent_sets_iteration_limits(monkeypatch):
@@ -95,6 +100,6 @@ def test_build_agent_rejects_bad_agent_type(monkeypatch):
                 system_message="hi",
                 tools=[],
                 memory_enabled=False,
-                agent_type="unknown-agent",
+                agent_type=AgentType.OPENAI_FUNCTIONS,
             )
         )

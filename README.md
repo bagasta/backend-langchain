@@ -38,10 +38,12 @@ curl -X POST http://localhost:8000/agents/ \
           "tools": ["calc", "google"],
           "memory_enabled": true,
           "memory_backend": "sql",
-          "max_iterations": 25
+          "max_iterations": 25,
+          "agent_type": "chat-conversational-react-description"  # optional; other values see langchain.agents.AgentType
         }
       }'
 ```
+Only `chat-conversational-react-description` is currently supported; specifying other `agent_type` values such as `openai-functions` will raise an error.
 
 Run the agent by ID:
 ```bash

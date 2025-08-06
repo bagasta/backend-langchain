@@ -38,18 +38,27 @@ def build_agent(config: AgentConfig):
     # 2. Gather tools from registry
     tools = get_tools_by_names(config.tools)
 
-    # 3. Build custom ReAct prompt with optional chat history placeholder
+    # 3. Build custom ReAct prompt including required tool placeholders
+    system_template = (
+        "{system_message}\n\n"
+        "You can use the following tools:\n{tools}\n\n"
+        "When deciding on actions, use the tool name exactly as in this list: {tool_names}."
+    )
     prompt_messages = [
-        ("system", config.system_message),
+        ("system", system_template),
         MessagesPlaceholder("chat_history"),
         ("human", "{input}"),
         MessagesPlaceholder("agent_scratchpad"),
     ]
-    prompt = ChatPromptTemplate.from_messages(prompt_messages)
+    prompt = ChatPromptTemplate.from_messages(prompt_messages).partial(
+        system_message=config.system_message
+    )
 
     # 4. Only the default chat-conversational ReAct agent is supported
-    if config.agent_type and config.agent_type != AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION.value:
-        raise ValueError(f"Unsupported agent type: {config.agent_type}")
+    if config.agent_type != AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION:
+        raise ValueError(
+            f"Unsupported agent type: {config.agent_type.value}"
+        )
 
     # 5. Create ReAct agent and executor
     agent = create_react_agent(llm, tools, prompt)

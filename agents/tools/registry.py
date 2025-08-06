@@ -3,11 +3,13 @@
 
 from .google import google_search_tool
 from .calc import calc_tool
+from .websearch import websearch_tool
 
 # Daftarkan semua tool di sini, key = nama tool yang dipakai di config.tools
 TOOL_REGISTRY = {
     "google": google_search_tool,
     "calc": calc_tool,
+    "websearch": websearch_tool,
 }
 
 def get_tools_by_names(names: list[str]):

@@ -9,3 +9,4 @@ pytest
 python-dotenv
 sqlalchemy
 psycopg2-binary
+requests

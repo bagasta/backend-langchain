@@ -56,6 +56,11 @@ Both endpoints accept optional limits: set `max_iterations` or `max_execution_ti
 
 The `agent_type` field accepts any value from LangChain's [`AgentType` enumeration](https://api.python.langchain.com/en/latest/agents/langchain.agents.agent_types.AgentType.html), enabling different execution strategies beyond the default ReAct-style agent.
 
+### Conversation Memory
+
+When `memory_enabled` is `true`, each agent stores its conversation history in the database referenced by `DATABASE_URL`. The
+history is keyed by the agent ID, so subsequent runs will include prior messages in context automatically.
+
 ## Extending
 - **Tools**: add a module under `agents/tools/` and register it in `agents/tools/registry.py`.
 - **Memory**: modify or extend `agents/memory.py`.

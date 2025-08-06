@@ -26,7 +26,7 @@ def _resolve_agent_type(agent_type_str: str) -> AgentType:
             raise ValueError(f"Unsupported agent type: {agent_type_str}") from exc
 
 
-def build_agent(config: AgentConfig):
+def build_agent(config: AgentConfig, session_id: str | None = None):
     """Construct a LangChain agent executor from the provided configuration."""
 
     # 1. Initialize LLM with provided or environment API key
@@ -49,8 +49,8 @@ def build_agent(config: AgentConfig):
     # 2. Gather tools from registry
     tools = get_tools_by_names(config.tools)
 
-    # 3. Optional memory
-    memory = get_memory_if_enabled(config.memory_enabled)
+    # 3. Optional persistent memory
+    memory = get_memory_if_enabled(config.memory_enabled, session_id=session_id)
 
     # 4. Resolve agent type and pass system message
     agent_type = _resolve_agent_type(config.agent_type)

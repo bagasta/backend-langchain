@@ -48,7 +48,8 @@ def test_run_agent_returns_400_on_iteration_limit(monkeypatch):
             model_name="gpt-4", system_message="hi", tools=[], memory_enabled=False
         )
 
-    def fake_run(config, message):
+    def fake_run(agent_id, config, message):
+        assert agent_id == "demo"
         raise ValueError("Agent execution stopped before producing a final answer.")
 
     monkeypatch.setattr("router.agents.get_agent_config", fake_get)

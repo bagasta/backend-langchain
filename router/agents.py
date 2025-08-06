@@ -36,7 +36,7 @@ async def run_agent(agent_id: str, payload: RunAgentRequest):
         config = get_agent_config(agent_id)
         if payload.openai_api_key:
             config.openai_api_key = payload.openai_api_key
-        result = run_custom_agent(config, payload.message)
+        result = run_custom_agent(agent_id, config, payload.message)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # pragma: no cover - runtime errors

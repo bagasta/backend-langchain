@@ -7,3 +7,4 @@ uvicorn
 pydantic
 pytest
 python-dotenv
+sqlalchemy

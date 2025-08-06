@@ -4,8 +4,8 @@
 import os
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
-from langchain.agents import AgentExecutor, AgentType
-from langchain.agents.conversational.base import ConversationalAgent
+from langchain.agents import AgentExecutor, AgentType, create_tool_calling_agent
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from pydantic import ValidationError
 from config.schema import AgentConfig
@@ -48,14 +48,19 @@ def build_agent(config: AgentConfig):
             f"Unsupported agent type: {config.agent_type.value}"
         )
 
-    # 4. Build a ConversationalAgent and corresponding executor
-    agent = ConversationalAgent.from_llm_and_tools(
-        llm=llm,
-        tools=tools,
-        prefix=config.system_message,
+    # 4. Build an agent capable of calling tools multiple times
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", config.system_message),
+            MessagesPlaceholder("chat_history"),
+            ("human", "{input}"),
+            MessagesPlaceholder("agent_scratchpad"),
+        ]
     )
 
-    executor = AgentExecutor.from_agent_and_tools(
+    agent = create_tool_calling_agent(llm, tools, prompt)
+
+    executor = AgentExecutor(
         agent=agent,
         tools=tools,
         verbose=True,

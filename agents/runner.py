@@ -13,6 +13,7 @@ def run_custom_agent(agent_id: str, config: AgentConfig, message: str) -> str:
     if config.memory_enabled:
         result = agent.invoke(payload, config={"configurable": {"session_id": agent_id}})
     else:
+        payload["chat_history"] = []
         result = agent.invoke(payload)
     if isinstance(result, dict):
         result = result.get("output", "")

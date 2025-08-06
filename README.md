@@ -39,11 +39,11 @@ curl -X POST http://localhost:8000/agents/ \
           "memory_enabled": true,
           "memory_backend": "sql",
           "max_iterations": 25,
-          "agent_type": "chat-conversational-react-description"  # optional; convers.
+          "agent_type": "chat-conversational-react-description"  # optional
         }
       }'
 ```
-The backend builds a LangChain **ConversationalAgent**, so only `conversational-react-description` and `chat-conversational-react-description` are supported. Supplying other `agent_type` values such as `openai-functions` will raise an error.
+The backend builds a LangChain **tool-calling agent** capable of invoking multiple tools in sequence. Only `conversational-react-description` and `chat-conversational-react-description` types are accepted; other `agent_type` values (e.g., `openai-functions`) will raise an error.
 
 Run the agent by ID:
 ```bash

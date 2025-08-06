@@ -1,5 +1,8 @@
 import pytest
-from langchain.agents import AgentType
+from langchain.agents import AgentType, Tool
+from langchain_core.messages import AIMessage
+from langchain_community.chat_models.fake import FakeMessagesListChatModel
+
 from config.schema import AgentConfig
 from agents.builder import build_agent
 
@@ -7,7 +10,7 @@ from agents.builder import build_agent
 def test_build_agent_requires_api_key(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     config = AgentConfig(
-        model_name="gpt-4",
+        model_name="gpt-4o-mini",
         system_message="test",
         tools=[],
         memory_enabled=False,
@@ -20,36 +23,27 @@ def test_build_agent_applies_system_message(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "key")
     captured = {}
 
-    def fake_chat_openai(**kwargs):
-        return object()
+    def fake_create_agent(llm, tools, prompt):
+        captured["system"] = prompt.messages[0].prompt.template
+        return "agent"
 
-    class DummyConversationalAgent:
-        @staticmethod
-        def from_llm_and_tools(llm, tools, prefix):
-            captured["prefix"] = prefix
-            return "agent"
+    class DummyExecutor:
+        def __init__(self, *, agent, tools, **kwargs):
+            captured["executor_kwargs"] = kwargs
 
-    def fake_from_agent_and_tools(agent, tools, **kwargs):
-        captured["executor_kwargs"] = kwargs
-        captured["agent"] = agent
-        return "executor"
-
-    monkeypatch.setattr("agents.builder.ChatOpenAI", fake_chat_openai)
-    monkeypatch.setattr("agents.builder.ConversationalAgent", DummyConversationalAgent)
-    monkeypatch.setattr(
-        "agents.builder.AgentExecutor.from_agent_and_tools", fake_from_agent_and_tools
-    )
+    monkeypatch.setattr("agents.builder.ChatOpenAI", lambda **_: object())
+    monkeypatch.setattr("agents.builder.create_tool_calling_agent", fake_create_agent)
+    monkeypatch.setattr("agents.builder.AgentExecutor", DummyExecutor)
 
     config = AgentConfig(
-        model_name="gpt-4",
+        model_name="gpt-4o-mini",
         system_message="follow these rules",
         tools=[],
         memory_enabled=False,
     )
 
-    agent = build_agent(config)
-    assert agent == "executor"
-    assert captured["prefix"] == "follow these rules"
+    build_agent(config)
+    assert captured["system"] == "follow these rules"
     assert captured["executor_kwargs"]["handle_parsing_errors"] is True
 
 
@@ -57,28 +51,16 @@ def test_build_agent_sets_iteration_limits(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "key")
 
     class DummyExecutor:
-        def __init__(self, *, max_iterations=None, max_execution_time=None, **kwargs):
+        def __init__(self, *, agent, tools, max_iterations=None, max_execution_time=None, **kwargs):
             self.max_iterations = max_iterations
             self.max_execution_time = max_execution_time
 
     monkeypatch.setattr("agents.builder.ChatOpenAI", lambda **_: object())
-
-    class DummyConversationalAgent:
-        @staticmethod
-        def from_llm_and_tools(llm, tools, prefix):
-            return "agent"
-
-    monkeypatch.setattr("agents.builder.ConversationalAgent", DummyConversationalAgent)
-
-    def fake_from_agent_and_tools(agent, tools, **kwargs):
-        return DummyExecutor(**kwargs)
-
-    monkeypatch.setattr(
-        "agents.builder.AgentExecutor.from_agent_and_tools", fake_from_agent_and_tools
-    )
+    monkeypatch.setattr("agents.builder.create_tool_calling_agent", lambda *_, **__: "agent")
+    monkeypatch.setattr("agents.builder.AgentExecutor", DummyExecutor)
 
     config = AgentConfig(
-        model_name="gpt-4",
+        model_name="gpt-4o-mini",
         system_message="hi",
         tools=[],
         memory_enabled=False,
@@ -97,7 +79,7 @@ def test_build_agent_rejects_bad_agent_type(monkeypatch):
     with pytest.raises(ValueError, match="Unsupported agent type"):
         build_agent(
             AgentConfig(
-                model_name="gpt-4",
+                model_name="gpt-4o-mini",
                 system_message="hi",
                 tools=[],
                 memory_enabled=False,
@@ -106,26 +88,47 @@ def test_build_agent_rejects_bad_agent_type(monkeypatch):
         )
 
 
-def test_build_agent_accepts_conversational_types(monkeypatch):
+def test_agent_can_use_multiple_tools(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "key")
-    monkeypatch.setattr("agents.builder.ChatOpenAI", lambda **_: object())
 
-    class DummyConversationalAgent:
-        @staticmethod
-        def from_llm_and_tools(llm, tools, prefix):
-            return "agent"
+    calls = []
 
-    monkeypatch.setattr("agents.builder.ConversationalAgent", DummyConversationalAgent)
+    def google_func(q):
+        calls.append(("google", q))
+        return "result"
+
+    def calc_func(expr):
+        calls.append(("calc", expr))
+        return "4"
+
+    google_tool = Tool(name="google_search", func=google_func, description="search")
+    calc_tool = Tool(name="calculator", func=calc_func, description="calc")
     monkeypatch.setattr(
-        "agents.builder.AgentExecutor.from_agent_and_tools", lambda **_: "executor"
+        "agents.tools.registry.TOOL_REGISTRY", {"google": google_tool, "calc": calc_tool}
     )
+
+    class DummyLLM(FakeMessagesListChatModel):
+        def bind_tools(self, tools):
+            return self
+
+    llm = DummyLLM(
+        responses=[
+            AIMessage(content="", tool_calls=[{"id": "1", "name": "google_search", "args": {"query": "python"}}]),
+            AIMessage(content="", tool_calls=[{"id": "2", "name": "calculator", "args": {"expression": "2+2"}}]),
+            AIMessage(content="final"),
+        ]
+    )
+
+    monkeypatch.setattr("agents.builder.ChatOpenAI", lambda **_: llm)
 
     config = AgentConfig(
-        model_name="gpt-4",
-        system_message="hi",
-        tools=[],
+        model_name="gpt-4o-mini",
+        system_message="system",
+        tools=["google", "calc"],
         memory_enabled=False,
-        agent_type=AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION,
     )
 
-    assert build_agent(config) == "executor"
+    executor = build_agent(config)
+    result = executor.invoke({"input": "question", "chat_history": []})
+    assert result["output"] == "final"
+    assert calls == [("google", "python"), ("calc", "2+2")]

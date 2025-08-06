@@ -4,11 +4,13 @@
 import os
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
-from langchain.agents import initialize_agent, AgentType
+from langchain.agents import AgentExecutor, AgentType, create_react_agent
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables.history import RunnableWithMessageHistory
 from pydantic import ValidationError
 from config.schema import AgentConfig
 from agents.tools.registry import get_tools_by_names
-from agents.memory import get_memory_if_enabled
+from agents.memory import MemoryBackend, get_history_loader
 
 load_dotenv()
 
@@ -26,7 +28,7 @@ def _resolve_agent_type(agent_type_str: str) -> AgentType:
             raise ValueError(f"Unsupported agent type: {agent_type_str}") from exc
 
 
-def build_agent(config: AgentConfig, session_id: str | None = None):
+def build_agent(config: AgentConfig):
     """Construct a LangChain agent executor from the provided configuration."""
 
     # 1. Initialize LLM with provided or environment API key
@@ -49,26 +51,39 @@ def build_agent(config: AgentConfig, session_id: str | None = None):
     # 2. Gather tools from registry
     tools = get_tools_by_names(config.tools)
 
-    # 3. Optional persistent memory
-    memory = get_memory_if_enabled(config.memory_enabled, session_id=session_id)
+    # 3. Build custom ReAct prompt with optional chat history placeholder
+    prompt_messages = [
+        ("system", config.system_message),
+        MessagesPlaceholder("chat_history"),
+        ("human", "{input}"),
+        MessagesPlaceholder("agent_scratchpad"),
+    ]
+    prompt = ChatPromptTemplate.from_messages(prompt_messages)
 
-    # 4. Resolve agent type and pass system message
+    # 4. Resolve agent type
     agent_type = _resolve_agent_type(config.agent_type)
-    agent_kwargs = {}
-    if config.system_message:
-        agent_kwargs["system_message"] = config.system_message
 
-    # 5. Initialize agent executor capable of multiple tool invocations
-    executor = initialize_agent(
+    # 5. Create ReAct agent and executor
+    agent = create_react_agent(llm, tools, prompt, agent_type=agent_type)
+    executor = AgentExecutor(
+        agent=agent,
         tools=tools,
-        llm=llm,
-        agent=agent_type,
-        agent_kwargs=agent_kwargs,
         verbose=True,
-        memory=memory,
         handle_parsing_errors=True,
         max_iterations=config.max_iterations,
         max_execution_time=config.max_execution_time,
     )
+
+    # 6. Optionally wrap with message history for memory
+    if config.memory_enabled:
+        backend = MemoryBackend(config.memory_backend)
+        history_loader = get_history_loader(backend)
+        executor = RunnableWithMessageHistory(
+            executor,
+            history_loader,
+            input_messages_key="input",
+            history_messages_key="chat_history",
+            output_messages_key="output",
+        )
 
     return executor

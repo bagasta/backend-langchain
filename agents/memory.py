@@ -1,65 +1,74 @@
-"""Memory utilities for agents.
+"""Chat history backends for agent memory.
 
-This module now persists conversation history to the project database so that
-each agent retains context across runs. It relies on LangChain's
-``SQLChatMessageHistory`` which automatically creates the required SQL table
-when pointed at a valid database URL.
+This module exposes utilities for constructing chat message history stores
+compatible with LangChain's ``RunnableWithMessageHistory`` wrapper.  It
+provides multiple backends – in-memory, SQL and file based – so each agent can
+retain context across requests using the mechanism best suited for the
+deployment environment.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
+from enum import Enum
+from pathlib import Path
+from typing import Callable
 
-from langchain.memory import ConversationBufferMemory
-from langchain.memory.chat_memory import BaseChatMemory
-from langchain_community.chat_message_histories import SQLChatMessageHistory
+from langchain_core.chat_history import BaseChatMessageHistory
+from langchain_community.chat_message_histories import (
+    ChatMessageHistory,
+    FileChatMessageHistory,
+    SQLChatMessageHistory,
+)
 from sqlalchemy import create_engine
 
 
-def get_memory_if_enabled(enabled: bool, session_id: str | None = None) -> Optional[BaseChatMemory]:
-    """Return a persistent ``ConversationBufferMemory`` if enabled.
+class MemoryBackend(str, Enum):
+    """Supported chat history backends."""
 
-    Parameters
-    ----------
-    enabled: bool
-        Flag indicating whether memory should be activated.
-    session_id: str | None
-        Identifier used to associate stored messages with a particular agent
-        instance. Required when ``enabled`` is ``True`` to ensure messages are
-        written to the correct conversation.
-    """
+    IN_MEMORY = "in_memory"
+    SQL = "sql"
+    FILE = "file"
 
-    if not enabled:
-        return None
 
-    if not session_id:
-        raise ValueError("session_id is required when memory is enabled")
+def _load_sql_history(session_id: str) -> BaseChatMessageHistory:
+    """Return an SQL-backed chat history or fall back to in-memory storage."""
 
     db_url = os.getenv("DATABASE_URL")
-    if db_url:
-        try:
-            engine = create_engine(db_url)
-            chat_history = SQLChatMessageHistory(
-                session_id=session_id, connection=engine
-            )
-            return ConversationBufferMemory(
-                memory_key="chat_history",
-                chat_memory=chat_history,
-                return_messages=True,
-            )
-        except ModuleNotFoundError as exc:
-            logging.warning(
-                "%s; falling back to ephemeral in-memory conversation store", exc
-            )
-            return ConversationBufferMemory(
-                memory_key="chat_history", return_messages=True
-            )
+    if not db_url:
+        logging.warning(
+            "DATABASE_URL not set; falling back to ephemeral in-memory conversation store",
+        )
+        return ChatMessageHistory()
 
-    logging.warning(
-        "DATABASE_URL not set; falling back to ephemeral in-memory conversation store",
-    )
-    return ConversationBufferMemory(
-        memory_key="chat_history", return_messages=True
-    )
+    try:
+        engine = create_engine(db_url)
+        return SQLChatMessageHistory(session_id=session_id, connection=engine)
+    except ModuleNotFoundError as exc:  # pragma: no cover - depends on optional deps
+        logging.warning("%s; falling back to ephemeral in-memory conversation store", exc)
+        return ChatMessageHistory()
+
+
+def _load_file_history(session_id: str) -> BaseChatMessageHistory:
+    """Return a file-based chat history store."""
+
+    directory = Path(os.getenv("MEMORY_DIR", "."))
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{session_id}.json"
+    return FileChatMessageHistory(str(path))
+
+
+def get_history_loader(backend: MemoryBackend) -> Callable[[str], BaseChatMessageHistory]:
+    """Return a factory that builds chat histories for ``RunnableWithMessageHistory``.
+
+    The returned callable accepts a ``session_id`` and yields an appropriate
+    ``BaseChatMessageHistory`` instance.
+    """
+
+    if backend == MemoryBackend.SQL:
+        return _load_sql_history
+    if backend == MemoryBackend.FILE:
+        return _load_file_history
+    return lambda _session_id: ChatMessageHistory()
+

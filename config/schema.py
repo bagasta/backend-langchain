@@ -4,12 +4,14 @@
 from pydantic import BaseModel
 from typing import List, Optional
 from langchain.agents import AgentType
+from agents.memory import MemoryBackend
 
 class AgentConfig(BaseModel):
     model_name: str
     system_message: str
     tools: List[str]
     memory_enabled: Optional[bool] = False
+    memory_backend: Optional[MemoryBackend] = MemoryBackend.IN_MEMORY
     openai_api_key: Optional[str] = None
     max_iterations: Optional[int] = None
     max_execution_time: Optional[float] = None

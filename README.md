@@ -37,6 +37,7 @@ curl -X POST http://localhost:8000/agents/ \
           "system_message": "You are a helpful bot",
           "tools": ["calc", "google"],
           "memory_enabled": true,
+          "memory_backend": "sql",
           "agent_type": "openai-functions",
           "max_iterations": 25
         }
@@ -59,10 +60,13 @@ The `agent_type` field accepts any value from LangChain's [`AgentType` enumerati
 
 ### Conversation Memory
 
-When `memory_enabled` is `true`, each agent stores its conversation history in the database referenced by `DATABASE_URL`. The
-history is keyed by the agent ID, so subsequent runs will include prior messages in context automatically.
-If `DATABASE_URL` is not set, the agent falls back to an ephemeral, in-memory buffer and conversation history is not persisted
-between runs.
+When `memory_enabled` is `true`, each agent stores its conversation history using the selected backend:
+
+- `sql` (default when `DATABASE_URL` is provided) persists history in the configured database.
+- `file` writes each conversation to `MEMORY_DIR` as JSON.
+- `in_memory` keeps history only for the current process.
+
+History is keyed by the agent ID, so subsequent runs recall prior messages when using a persistent backend.
 
 ## Extending
 - **Tools**: add a module under `agents/tools/` and register it in `agents/tools/registry.py`.

@@ -55,6 +55,7 @@ def get_agent_config(agent_id: str) -> AgentConfig:
         "system_message": data["systemMessage"],
         "tools": data["tools"],
         "memory_enabled": data["memoryEnabled"],
+        "memory_backend": data.get("memoryBackend", "in_memory"),
     }
     if data.get("agentType") is not None:
         payload["agent_type"] = data["agentType"]

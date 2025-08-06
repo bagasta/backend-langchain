@@ -8,6 +8,7 @@ Backend framework for building configurable LangChain agents through a REST API.
 - PostgreSQL (for Prisma ORM)
 - PostgreSQL driver (`psycopg2-binary` is included in `requirements.txt`)
 - Environment variables such as `OPENAI_API_KEY` for LLM access (or pass `openai_api_key` in the request payload). Values from a `.env` file are loaded automatically.
+- For the `spreadsheet` tool, `GOOGLE_APPLICATION_CREDENTIALS` must point to a Google service-account JSON.
 
 ## Setup
 ```bash
@@ -35,7 +36,7 @@ curl -X POST http://localhost:8000/agents/ \
         "config": {
           "model_name": "gpt-4",
           "system_message": "You are a helpful bot",
-          "tools": ["calc", "google", "websearch"],
+          "tools": ["calc", "google", "websearch", "spreadsheet"],
           "memory_enabled": true,
           "memory_backend": "sql",
           "max_iterations": 25,
@@ -69,7 +70,7 @@ History is keyed by the agent ID, so subsequent runs recall prior messages when 
 
 ## Extending
 - **Tools**: add a module under `agents/tools/` and register it in `agents/tools/registry.py`.
-  Available built-ins include `calc`, `google`, and `websearch` (OpenAI-powered product lookup).
+  Available built-ins include `calc`, `google`, `websearch` (OpenAI-powered product lookup), and `spreadsheet` for Google Sheets operations.
 - **Memory**: modify or extend `agents/memory.py`.
 
 ## Testing

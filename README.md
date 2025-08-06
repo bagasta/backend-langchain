@@ -43,7 +43,7 @@ curl -X POST http://localhost:8000/agents/ \
         }
       }'
 ```
-Only `chat-conversational-react-description` is currently supported; specifying other `agent_type` values such as `openai-functions` will raise an error.
+`chat-conversational-react-description` and `chat-zero-shot-react-description` are supported. Specifying other `agent_type` values such as `openai-functions` will raise an error.
 
 Run the agent by ID:
 ```bash

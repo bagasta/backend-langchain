@@ -103,3 +103,20 @@ def test_build_agent_rejects_bad_agent_type(monkeypatch):
                 agent_type=AgentType.OPENAI_FUNCTIONS,
             )
         )
+
+
+def test_build_agent_accepts_chat_zero_shot(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    monkeypatch.setattr("agents.builder.ChatOpenAI", lambda **_: object())
+    monkeypatch.setattr("agents.builder.create_react_agent", lambda *args, **kwargs: "agent")
+    monkeypatch.setattr("agents.builder.AgentExecutor", lambda **kwargs: "executor")
+
+    config = AgentConfig(
+        model_name="gpt-4",
+        system_message="hi",
+        tools=[],
+        memory_enabled=False,
+        agent_type=AgentType.CHAT_ZERO_SHOT_REACT_DESCRIPTION,
+    )
+
+    assert build_agent(config) == "executor"

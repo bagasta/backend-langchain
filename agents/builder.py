@@ -54,8 +54,12 @@ def build_agent(config: AgentConfig):
         system_message=config.system_message
     )
 
-    # 4. Only the default chat-conversational ReAct agent is supported
-    if config.agent_type != AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION:
+    # 4. Support both chat ReAct variants from LangChain
+    supported_agent_types = {
+        AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION,
+        AgentType.CHAT_ZERO_SHOT_REACT_DESCRIPTION,
+    }
+    if config.agent_type not in supported_agent_types:
         raise ValueError(
             f"Unsupported agent type: {config.agent_type.value}"
         )

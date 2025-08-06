@@ -15,19 +15,6 @@ from agents.memory import MemoryBackend, get_history_loader
 load_dotenv()
 
 
-def _resolve_agent_type(agent_type_str: str) -> AgentType:
-    """Map a string to a LangChain AgentType."""
-    if not agent_type_str:
-        return AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION
-    try:
-        return AgentType(agent_type_str)
-    except ValueError:
-        try:
-            return AgentType[agent_type_str.upper()]
-        except KeyError as exc:  # pragma: no cover - defensive
-            raise ValueError(f"Unsupported agent type: {agent_type_str}") from exc
-
-
 def build_agent(config: AgentConfig):
     """Construct a LangChain agent executor from the provided configuration."""
 
@@ -60,11 +47,12 @@ def build_agent(config: AgentConfig):
     ]
     prompt = ChatPromptTemplate.from_messages(prompt_messages)
 
-    # 4. Resolve agent type
-    agent_type = _resolve_agent_type(config.agent_type)
+    # 4. Only the default chat-conversational ReAct agent is supported
+    if config.agent_type and config.agent_type != AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION.value:
+        raise ValueError(f"Unsupported agent type: {config.agent_type}")
 
     # 5. Create ReAct agent and executor
-    agent = create_react_agent(llm, tools, prompt, agent_type=agent_type)
+    agent = create_react_agent(llm, tools, prompt)
     executor = AgentExecutor(
         agent=agent,
         tools=tools,

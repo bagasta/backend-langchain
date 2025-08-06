@@ -38,7 +38,6 @@ curl -X POST http://localhost:8000/agents/ \
           "tools": ["calc", "google"],
           "memory_enabled": true,
           "memory_backend": "sql",
-          "agent_type": "openai-functions",
           "max_iterations": 25
         }
       }'
@@ -55,8 +54,6 @@ curl -X POST http://localhost:8000/agents/{agent_id}/run \
 ```
 
 Both endpoints accept optional limits: set `max_iterations` or `max_execution_time` in the agent configuration to control how long an agent may run before aborting.
-
-The `agent_type` field accepts any value from LangChain's [`AgentType` enumeration](https://api.python.langchain.com/en/latest/agents/langchain.agents.agent_types.AgentType.html), enabling different execution strategies beyond the default ReAct-style agent.
 
 ### Conversation Memory
 

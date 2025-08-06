@@ -1,7 +1,4 @@
 import pytest
-from config.schema import AgentConfig
-import pytest
-from langchain.agents import AgentType
 from langchain_core.prompts import ChatPromptTemplate
 from config.schema import AgentConfig
 from agents.builder import build_agent
@@ -29,9 +26,8 @@ def test_build_agent_applies_system_message(monkeypatch):
     def fake_chat_openai(**kwargs):
         return DummyLLM()
 
-    def fake_create_react_agent(llm, tools, prompt, agent_type):
+    def fake_create_react_agent(llm, tools, prompt):
         captured["prompt"] = prompt
-        captured["agent_type"] = agent_type
         return "agent"
 
     def fake_agent_executor(agent, tools, **kwargs):
@@ -48,12 +44,10 @@ def test_build_agent_applies_system_message(monkeypatch):
         system_message="follow these rules",
         tools=[],
         memory_enabled=False,
-        agent_type="openai-functions",
     )
 
     agent = build_agent(config)
     assert agent == "executor"
-    assert captured["agent_type"] == AgentType.OPENAI_FUNCTIONS
     assert isinstance(captured["prompt"], ChatPromptTemplate)
     assert captured["executor_kwargs"]["handle_parsing_errors"] is True
 
@@ -68,7 +62,7 @@ def test_build_agent_sets_iteration_limits(monkeypatch):
 
     monkeypatch.setattr("agents.builder.ChatOpenAI", lambda **_: object())
 
-    def fake_create_react_agent(llm, tools, prompt, agent_type):
+    def fake_create_react_agent(llm, tools, prompt):
         return "agent"
 
     def fake_agent_executor(agent, tools, **kwargs):

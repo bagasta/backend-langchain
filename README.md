@@ -60,6 +60,8 @@ The `agent_type` field accepts any value from LangChain's [`AgentType` enumerati
 
 When `memory_enabled` is `true`, each agent stores its conversation history in the database referenced by `DATABASE_URL`. The
 history is keyed by the agent ID, so subsequent runs will include prior messages in context automatically.
+If `DATABASE_URL` is not set, the agent falls back to an ephemeral, in-memory buffer and conversation history is not persisted
+between runs.
 
 ## Extending
 - **Tools**: add a module under `agents/tools/` and register it in `agents/tools/registry.py`.

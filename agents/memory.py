@@ -8,6 +8,7 @@ when pointed at a valid database URL.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Optional
 
@@ -37,12 +38,14 @@ def get_memory_if_enabled(enabled: bool, session_id: str | None = None) -> Optio
         raise ValueError("session_id is required when memory is enabled")
 
     db_url = os.getenv("DATABASE_URL")
-    if not db_url:
-        raise ValueError(
-            "DATABASE_URL environment variable not set; required for persistent memory"
+    if db_url:
+        engine = create_engine(db_url)
+        chat_history = SQLChatMessageHistory(session_id=session_id, connection=engine)
+        return ConversationBufferMemory(
+            memory_key="chat_history", chat_memory=chat_history
         )
 
-    engine = create_engine(db_url)
-    chat_history = SQLChatMessageHistory(session_id=session_id, connection=engine)
-    # Return messages as a string so the agent scratchpad formatting remains intact
-    return ConversationBufferMemory(memory_key="chat_history", chat_memory=chat_history)
+    logging.warning(
+        "DATABASE_URL not set; falling back to ephemeral in-memory conversation store",
+    )
+    return ConversationBufferMemory(memory_key="chat_history")

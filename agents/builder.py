@@ -5,11 +5,7 @@ import os
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain.agents import AgentExecutor, AgentType
-from langchain.agents.format_scratchpad import format_log_to_messages
-from langchain.agents.output_parsers import ReActSingleInputOutputParser
-from langchain.tools.render import render_text_description
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables import RunnablePassthrough
+from langchain.agents.conversational.base import ConversationalAgent
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from pydantic import ValidationError
 from config.schema import AgentConfig
@@ -42,64 +38,25 @@ def build_agent(config: AgentConfig):
     # 2. Gather tools from registry
     tools = get_tools_by_names(config.tools)
 
-    # 3. Build ReAct-style prompt including required tool placeholders
-    system_template = (
-        "{system_message}\n\n"
-        "You can use the following tools:\n{tools}\n\n"
-        "Use the following format:\n"
-        "Question: the input question you must answer\n"
-        "Thought: you should always think about what to do\n"
-        "Action: the action to take, should be one of [{tool_names}]\n"
-        "Action Input: the input to the action\n"
-        "Observation: the result of the action\n"
-        "... (this Thought/Action/Action Input/Observation can repeat N times)\n"
-        "Thought: I now know the final answer\n"
-        "Final Answer: the final answer to the original input question"
-    )
-    prompt_messages = [
-        ("system", system_template),
-        ("human", "Question: {input}"),
-        MessagesPlaceholder("agent_scratchpad"),
-    ]
-    if config.memory_enabled:
-        prompt_messages.insert(1, MessagesPlaceholder("chat_history"))
-    prompt = ChatPromptTemplate.from_messages(prompt_messages).partial(
-        system_message=config.system_message
-    )
-
-    # 4. Support both chat ReAct variants from LangChain
+    # 3. Ensure a supported conversational agent type
     supported_agent_types = {
+        AgentType.CONVERSATIONAL_REACT_DESCRIPTION,
         AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION,
-        AgentType.CHAT_ZERO_SHOT_REACT_DESCRIPTION,
     }
     if config.agent_type not in supported_agent_types:
         raise ValueError(
             f"Unsupported agent type: {config.agent_type.value}"
         )
 
-    # 5. Inject tool metadata and build ReAct agent that keeps scratchpad as messages
-    missing = {"tools", "tool_names", "agent_scratchpad"}.difference(
-        prompt.input_variables + list(prompt.partial_variables)
-    )
-    if missing:
-        raise ValueError(f"Prompt missing required variables: {missing}")
-
-    prompt = prompt.partial(
-        tools=render_text_description(list(tools)),
-        tool_names=", ".join([t.name for t in tools]),
+    # 4. Build a ConversationalAgent and corresponding executor
+    agent = ConversationalAgent.from_llm_and_tools(
+        llm=llm,
+        tools=tools,
+        prefix=config.system_message,
     )
 
-    agent_chain = (
-        RunnablePassthrough.assign(
-            agent_scratchpad=lambda x: format_log_to_messages(x["intermediate_steps"])
-        )
-        | prompt
-        | llm
-        | ReActSingleInputOutputParser()
-    )
-
-    executor = AgentExecutor(
-        agent=agent_chain,
+    executor = AgentExecutor.from_agent_and_tools(
+        agent=agent,
         tools=tools,
         verbose=True,
         handle_parsing_errors=True,

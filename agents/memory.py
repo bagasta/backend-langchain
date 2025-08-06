@@ -45,15 +45,21 @@ def get_memory_if_enabled(enabled: bool, session_id: str | None = None) -> Optio
                 session_id=session_id, connection=engine
             )
             return ConversationBufferMemory(
-                memory_key="chat_history", chat_memory=chat_history
+                memory_key="chat_history",
+                chat_memory=chat_history,
+                return_messages=True,
             )
         except ModuleNotFoundError as exc:
             logging.warning(
                 "%s; falling back to ephemeral in-memory conversation store", exc
             )
-            return ConversationBufferMemory(memory_key="chat_history")
+            return ConversationBufferMemory(
+                memory_key="chat_history", return_messages=True
+            )
 
     logging.warning(
         "DATABASE_URL not set; falling back to ephemeral in-memory conversation store",
     )
-    return ConversationBufferMemory(memory_key="chat_history")
+    return ConversationBufferMemory(
+        memory_key="chat_history", return_messages=True
+    )

@@ -6,6 +6,7 @@ Backend framework for building configurable LangChain agents through a REST API.
 - Python 3.10+
 - Node.js 18+
 - PostgreSQL (for Prisma ORM)
+- PostgreSQL driver (`psycopg2-binary` is included in `requirements.txt`)
 - Environment variables such as `OPENAI_API_KEY` for LLM access (or pass `openai_api_key` in the request payload). Values from a `.env` file are loaded automatically.
 
 ## Setup

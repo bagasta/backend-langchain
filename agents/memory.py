@@ -39,11 +39,19 @@ def get_memory_if_enabled(enabled: bool, session_id: str | None = None) -> Optio
 
     db_url = os.getenv("DATABASE_URL")
     if db_url:
-        engine = create_engine(db_url)
-        chat_history = SQLChatMessageHistory(session_id=session_id, connection=engine)
-        return ConversationBufferMemory(
-            memory_key="chat_history", chat_memory=chat_history
-        )
+        try:
+            engine = create_engine(db_url)
+            chat_history = SQLChatMessageHistory(
+                session_id=session_id, connection=engine
+            )
+            return ConversationBufferMemory(
+                memory_key="chat_history", chat_memory=chat_history
+            )
+        except ModuleNotFoundError as exc:
+            logging.warning(
+                "%s; falling back to ephemeral in-memory conversation store", exc
+            )
+            return ConversationBufferMemory(memory_key="chat_history")
 
     logging.warning(
         "DATABASE_URL not set; falling back to ephemeral in-memory conversation store",

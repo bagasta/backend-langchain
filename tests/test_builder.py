@@ -47,6 +47,7 @@ def test_build_agent_applies_system_message(monkeypatch):
     template = prompt.messages[0].prompt.template
     assert "{tools}" in template
     assert "{tool_names}" in template
+    assert "Action Input" in template
     assert prompt.partial_variables["system_message"] == "follow these rules"
 
 

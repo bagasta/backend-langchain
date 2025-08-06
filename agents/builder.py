@@ -42,15 +42,23 @@ def build_agent(config: AgentConfig):
     # 2. Gather tools from registry
     tools = get_tools_by_names(config.tools)
 
-    # 3. Build custom ReAct prompt including required tool placeholders
+    # 3. Build ReAct-style prompt including required tool placeholders
     system_template = (
         "{system_message}\n\n"
         "You can use the following tools:\n{tools}\n\n"
-        "When deciding on actions, use the tool name exactly as in this list: {tool_names}."
+        "Use the following format:\n"
+        "Question: the input question you must answer\n"
+        "Thought: you should always think about what to do\n"
+        "Action: the action to take, should be one of [{tool_names}]\n"
+        "Action Input: the input to the action\n"
+        "Observation: the result of the action\n"
+        "... (this Thought/Action/Action Input/Observation can repeat N times)\n"
+        "Thought: I now know the final answer\n"
+        "Final Answer: the final answer to the original input question"
     )
     prompt_messages = [
         ("system", system_template),
-        ("human", "{input}"),
+        ("human", "Question: {input}"),
         MessagesPlaceholder("agent_scratchpad"),
     ]
     if config.memory_enabled:

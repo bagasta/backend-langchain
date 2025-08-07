@@ -3,9 +3,10 @@ import json
 import requests
 import gspread
 from agents.tools.calc import calc_tool
-from agents.tools.google import google_search_tool
+from agents.tools.google_search import google_search_tool
 from agents.tools.websearch import websearch_tool
 from agents.tools.spreadsheet import spreadsheet_tool
+from agents.tools.registry import TOOL_REGISTRY
 
 
 def test_calc_tool():
@@ -13,10 +14,34 @@ def test_calc_tool():
     assert re.fullmatch(r"[A-Za-z0-9_-]+", calc_tool.name)
 
 
-def test_google_search_tool():
-    result = google_search_tool.func("LangChain")
-    assert "LangChain" in result
+def test_google_search_tool_fallback():
+    """Without API keys the Google search tool returns an error message."""
+    output = (
+        google_search_tool.run("LangChain")
+        if hasattr(google_search_tool, "run")
+        else google_search_tool.func("LangChain")
+    )
+    assert "Google Search tool unavailable" in output
     assert re.fullmatch(r"[A-Za-z0-9_-]+", google_search_tool.name)
+
+
+def test_all_google_tools_registered():
+    names = [
+        "google_search",
+        "google_serper",
+        "google_trends",
+        "google_places",
+        "google_finance",
+        "google_cloud_text_to_speech",
+        "google_jobs",
+        "google_scholar",
+        "google_books",
+        "google_lens",
+    ]
+    for name in names:
+        assert name in TOOL_REGISTRY
+        tool = TOOL_REGISTRY[name]
+        assert re.fullmatch(r"[A-Za-z0-9_-]+", tool.name)
 
 
 def test_websearch_tool(monkeypatch):

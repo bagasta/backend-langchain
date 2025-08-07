@@ -94,7 +94,7 @@ def test_agent_can_use_multiple_tools(monkeypatch):
     calls = []
 
     def google_func(q):
-        calls.append(("google", q))
+        calls.append(("google_search", q))
         return "result"
 
     def calc_func(expr):
@@ -104,7 +104,8 @@ def test_agent_can_use_multiple_tools(monkeypatch):
     google_tool = Tool(name="google_search", func=google_func, description="search")
     calc_tool = Tool(name="calculator", func=calc_func, description="calc")
     monkeypatch.setattr(
-        "agents.tools.registry.TOOL_REGISTRY", {"google": google_tool, "calc": calc_tool}
+        "agents.tools.registry.TOOL_REGISTRY",
+        {"google_search": google_tool, "calc": calc_tool},
     )
 
     class DummyLLM(FakeMessagesListChatModel):
@@ -124,11 +125,11 @@ def test_agent_can_use_multiple_tools(monkeypatch):
     config = AgentConfig(
         model_name="gpt-4o-mini",
         system_message="system",
-        tools=["google", "calc"],
+        tools=["google_search", "calc"],
         memory_enabled=False,
     )
 
     executor = build_agent(config)
     result = executor.invoke({"input": "question", "chat_history": []})
     assert result["output"] == "final"
-    assert calls == [("google", "python"), ("calc", "2+2")]
+    assert calls == [("google_search", "python"), ("calc", "2+2")]

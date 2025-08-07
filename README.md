@@ -38,7 +38,7 @@ curl -X POST http://localhost:8000/agents/ \
         "config": {
           "model_name": "gpt-4",
           "system_message": "You are a helpful bot",
-          "tools": ["calc", "google", "websearch", "spreadsheet"],
+          "tools": ["calc", "google_search", "websearch", "spreadsheet"],
           "memory_enabled": true,
           "memory_backend": "sql",
           "max_iterations": 25,
@@ -72,7 +72,7 @@ History is keyed by the agent ID, so subsequent runs recall prior messages when 
 
 ## Extending
 - **Tools**: add a module under `agents/tools/` and register it in `agents/tools/registry.py`.
-  Available built-ins include `calc`, `google`, `websearch` (OpenAI-powered product lookup), and `spreadsheet` for Google Sheets operations.
+  Built-in tools include math evaluation (`calc`), numerous Google integrations (`google_search`, `google_serper`, `google_trends`, `google_places`, `google_finance`, `google_cloud_text_to_speech`, `google_jobs`, `google_scholar`, `google_books`, `google_lens`), an OpenAI-powered product lookup (`websearch`), and Google Sheets operations (`spreadsheet`).
 - **Memory**: modify or extend `agents/memory.py`.
 
 ## Testing

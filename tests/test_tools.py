@@ -4,6 +4,10 @@ import requests
 import gspread
 from agents.tools.calc import calc_tool
 from agents.tools.google_search import google_search_tool
+from agents.tools.gmail import (
+    gmail_search_tool,
+    gmail_send_message_tool,
+)
 from agents.tools.websearch import websearch_tool
 from agents.tools.spreadsheet import spreadsheet_tool
 from agents.tools.registry import TOOL_REGISTRY
@@ -25,6 +29,27 @@ def test_google_search_tool_fallback():
     assert re.fullmatch(r"[A-Za-z0-9_-]+", google_search_tool.name)
 
 
+def test_gmail_tools_fallback():
+    search_out = (
+        gmail_search_tool.run("test")
+        if hasattr(gmail_search_tool, "run")
+        else gmail_search_tool.func("test")
+    )
+    assert "Gmail tool unavailable" in search_out
+    send_out = (
+        gmail_send_message_tool.run(
+            "hi", to="a", subject="b"
+        )
+        if hasattr(gmail_send_message_tool, "run")
+        else gmail_send_message_tool.func(
+            "hi", to="a", subject="b"
+        )
+    )
+    assert "Gmail tool unavailable" in send_out
+    assert re.fullmatch(r"[A-Za-z0-9_-]+", gmail_search_tool.name)
+    assert re.fullmatch(r"[A-Za-z0-9_-]+", gmail_send_message_tool.name)
+
+
 def test_all_google_tools_registered():
     names = [
         "google_search",
@@ -37,6 +62,8 @@ def test_all_google_tools_registered():
         "google_scholar",
         "google_books",
         "google_lens",
+        "gmail_search",
+        "gmail_send_message",
     ]
     for name in names:
         assert name in TOOL_REGISTRY

@@ -11,6 +11,7 @@ from .google_jobs import google_jobs_tool
 from .google_scholar import google_scholar_tool
 from .google_books import google_books_tool
 from .google_lens import google_lens_tool
+from .gmail import gmail_search_tool, gmail_send_message_tool
 from .calc import calc_tool
 from .websearch import websearch_tool
 from .spreadsheet import spreadsheet_tool
@@ -28,6 +29,8 @@ TOOL_REGISTRY = {
     "google_scholar": google_scholar_tool,
     "google_books": google_books_tool,
     "google_lens": google_lens_tool,
+    "gmail_search": gmail_search_tool,
+    "gmail_send_message": gmail_send_message_tool,
     "calc": calc_tool,
     "websearch": websearch_tool,
     "spreadsheet": spreadsheet_tool,

@@ -11,6 +11,8 @@ Backend framework for building configurable LangChain agents through a REST API.
 - For the `spreadsheet` tool, `GOOGLE_APPLICATION_CREDENTIALS` must point to a Google service-account JSON. Optionally set
   `SPREADSHEET_ID` to avoid passing the sheet ID in every request; worksheet names are matched case-insensitively and default to
   the first sheet when omitted. Set `SPREADSHEET_TIMEOUT` (seconds) to limit request time and surface logs if Google API calls hang.
+- For Gmail tools, set `GMAIL_TOKEN_PATH` and `GMAIL_CLIENT_SECRETS_PATH` to your OAuth token and client secrets files. Override
+  `GMAIL_SCOPES` to customize API permissions.
 
 ## Setup
 ```bash
@@ -72,7 +74,7 @@ History is keyed by the agent ID, so subsequent runs recall prior messages when 
 
 ## Extending
 - **Tools**: add a module under `agents/tools/` and register it in `agents/tools/registry.py`.
-  Built-in tools include math evaluation (`calc`), numerous Google integrations (`google_search`, `google_serper`, `google_trends`, `google_places`, `google_finance`, `google_cloud_text_to_speech`, `google_jobs`, `google_scholar`, `google_books`, `google_lens`), an OpenAI-powered product lookup (`websearch`), and Google Sheets operations (`spreadsheet`).
+  Built-in tools include math evaluation (`calc`), numerous Google integrations (`google_search`, `google_serper`, `google_trends`, `google_places`, `google_finance`, `google_cloud_text_to_speech`, `google_jobs`, `google_scholar`, `google_books`, `google_lens`, `gmail_search`, `gmail_send_message`), an OpenAI-powered product lookup (`websearch`), and Google Sheets operations (`spreadsheet`).
 - **Memory**: modify or extend `agents/memory.py`.
 
 ## Testing

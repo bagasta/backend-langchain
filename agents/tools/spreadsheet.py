@@ -3,10 +3,13 @@
 import json
 import os
 import re
+import logging
 from typing import Any, Dict, Union
 
 import gspread
 from langchain.agents import Tool
+
+logger = logging.getLogger(__name__)
 
 
 def _spreadsheet_action(input_data: Union[str, Dict[str, Any]]) -> str:
@@ -49,9 +52,16 @@ def _spreadsheet_action(input_data: Union[str, Dict[str, Any]]) -> str:
     if not creds_path:
         raise ValueError("GOOGLE_APPLICATION_CREDENTIALS not set for spreadsheet tool")
 
+    logger.info("Spreadsheet action '%s' on %s", action, spreadsheet_id)
     client = gspread.service_account(filename=creds_path)
-    sheet = client.open_by_key(spreadsheet_id)
+    timeout = float(os.getenv("SPREADSHEET_TIMEOUT", "30"))
+    if hasattr(client, "http_client"):
+        try:
+            client.http_client.set_timeout(timeout)
+        except Exception:  # pragma: no cover - best effort
+            logger.warning("Could not set timeout on gspread client")
 
+    sheet = client.open_by_key(spreadsheet_id)
     worksheets = {ws.title.lower(): ws for ws in sheet.worksheets()}
     if worksheet_ref is None:
         ws = sheet.get_worksheet(0)
@@ -64,6 +74,7 @@ def _spreadsheet_action(input_data: Union[str, Dict[str, Any]]) -> str:
 
     if action == "read":
         rng = params.get("range")
+        logger.info("Reading range '%s' from worksheet '%s'", rng or "all", ws.title)
         if rng:
             values = ws.get(rng)
         else:
@@ -73,6 +84,7 @@ def _spreadsheet_action(input_data: Union[str, Dict[str, Any]]) -> str:
         values = params.get("values")
         if not isinstance(values, list):
             raise ValueError("'values' must be provided as list for add action")
+        logger.info("Appending row to '%s': %s", ws.title, values)
         ws.append_row(values)
         return "row added"
     if action == "update":
@@ -80,12 +92,14 @@ def _spreadsheet_action(input_data: Union[str, Dict[str, Any]]) -> str:
         values = params.get("values")
         if not rng or values is None:
             raise ValueError("'range' and 'values' required for update action")
+        logger.info("Updating range '%s' on '%s'", rng, ws.title)
         ws.update(rng, values)
         return "range updated"
     if action == "clear":
         rng = params.get("range")
         if not rng:
             raise ValueError("'range' required for clear action")
+        logger.info("Clearing range '%s' on '%s'", rng, ws.title)
         ws.batch_clear([rng])
         return "range cleared"
 

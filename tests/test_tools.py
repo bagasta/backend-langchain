@@ -76,7 +76,17 @@ def test_spreadsheet_tool(monkeypatch):
         def worksheets(self):
             return self._worksheets
 
+    class FakeHttpClient:
+        def __init__(self):
+            self.timeout = None
+
+        def set_timeout(self, timeout):
+            self.timeout = timeout
+
     class FakeClient:
+        def __init__(self):
+            self.http_client = FakeHttpClient()
+
         def open_by_key(self, key):
             return FakeSheet()
 

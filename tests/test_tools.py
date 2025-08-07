@@ -88,23 +88,19 @@ def test_spreadsheet_tool(monkeypatch):
     monkeypatch.setattr(gspread, "service_account", fake_service_account)
 
     # read all values using default spreadsheet id and automatic first sheet
-    res = spreadsheet_tool.func(json.dumps({"action": "read"}))
+    res = spreadsheet_tool.func({"action": "read"})
     assert res == json.dumps([["a", "b"]])
 
     # add row
-    spreadsheet_tool.func(
-        json.dumps({"action": "add", "values": [1, 2], "worksheet": "sheet1"})
-    )
+    spreadsheet_tool.func({"action": "add", "values": [1, 2], "worksheet": "sheet1"})
     assert ("add", [1, 2]) in calls
 
     # update
-    spreadsheet_tool.func(
-        json.dumps({"action": "update", "range": "A1", "values": 5})
-    )
+    spreadsheet_tool.func({"action": "update", "range": "A1", "values": 5})
     assert ("update", "A1", 5) in calls
 
     # clear
-    spreadsheet_tool.func(json.dumps({"action": "clear", "range": "A1"}))
+    spreadsheet_tool.func({"action": "clear", "range": "A1"})
     assert ("clear", ["A1"]) in calls
 
     assert re.fullmatch(r"[A-Za-z0-9_-]+", spreadsheet_tool.name)

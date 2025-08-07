@@ -3,16 +3,16 @@
 import json
 import os
 import re
-from typing import Any, Dict
+from typing import Any, Dict, Union
 
 import gspread
 from langchain.agents import Tool
 
 
-def _spreadsheet_action(input_str: str) -> str:
+def _spreadsheet_action(input_data: Union[str, Dict[str, Any]]) -> str:
     """Perform operations on a Google Spreadsheet.
 
-    Expected JSON input with at least:
+    Accepts a JSON string or dict with at least:
     - action: one of 'read', 'add', 'update', 'clear'
     - spreadsheet_id or spreadsheet_url: target sheet identifier
     - worksheet: worksheet title or index (optional)
@@ -25,7 +25,12 @@ def _spreadsheet_action(input_str: str) -> str:
     `GOOGLE_APPLICATION_CREDENTIALS` env var.
     """
 
-    params: Dict[str, Any] = json.loads(input_str)
+    if isinstance(input_data, str):
+        params: Dict[str, Any] = json.loads(input_data)
+    elif isinstance(input_data, dict):
+        params = input_data
+    else:  # pragma: no cover - defensive
+        raise TypeError("input must be a JSON string or dict")
     action = params.get("action")
     spreadsheet_id = params.get("spreadsheet_id")
     if not spreadsheet_id:

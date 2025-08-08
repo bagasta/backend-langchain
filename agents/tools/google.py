@@ -1,1 +1,0 @@
-# Example tool: Google search

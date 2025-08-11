@@ -1,3 +1,4 @@
+import json
 import pytest
 import pytest
 from fastapi.testclient import TestClient
@@ -27,6 +28,9 @@ def test_create_agent_persists(monkeypatch):
         return "new-id"
 
     monkeypatch.setattr("router.agents.create_agent_record", fake_create)
+    monkeypatch.setattr(
+        "router.agents.get_auth_urls", lambda tools, state=None: {}
+    )
     payload = {
         "owner_id": "user1",
         "name": "demo",
@@ -40,6 +44,36 @@ def test_create_agent_persists(monkeypatch):
     response = client.post("/agents/", json=payload)
     assert response.status_code == 200
     assert response.json()["agent_id"] == "new-id"
+
+
+def test_create_agent_returns_gmail_auth_url(monkeypatch, tmp_path):
+    secrets = tmp_path / "client.json"
+    secrets.write_text(json.dumps({"installed": {"client_id": "cid"}}))
+    monkeypatch.setenv("GMAIL_CLIENT_SECRETS_PATH", str(secrets))
+    monkeypatch.setenv("GMAIL_REDIRECT_URI", "https://example.com/callback")
+
+    monkeypatch.setattr(
+        "router.agents.create_agent_record", lambda owner, name, config: "id1"
+    )
+
+    payload = {
+        "owner_id": "user1",
+        "name": "demo",
+        "config": {
+            "model_name": "gpt-4",
+            "system_message": "hi",
+            "tools": ["gmail_search"],
+            "memory_enabled": False,
+        },
+    }
+    response = client.post("/agents/", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["agent_id"] == "id1"
+    assert "auth_urls" in data
+    assert data["auth_urls"]["gmail"].startswith(
+        "https://accounts.google.com/o/oauth2/v2/auth?"
+    )
 
 
 def test_run_agent_returns_400_on_iteration_limit(monkeypatch):

@@ -7,6 +7,7 @@ from agents.tools.google_search import google_search_tool
 from agents.tools.gmail import (
     gmail_search_tool,
     gmail_send_message_tool,
+    build_gmail_oauth_url,
 )
 from agents.tools.websearch import websearch_tool
 from agents.tools.spreadsheet import spreadsheet_tool
@@ -48,6 +49,16 @@ def test_gmail_tools_fallback():
     assert "Gmail tool unavailable" in send_out
     assert re.fullmatch(r"[A-Za-z0-9_-]+", gmail_search_tool.name)
     assert re.fullmatch(r"[A-Za-z0-9_-]+", gmail_send_message_tool.name)
+
+
+def test_build_gmail_oauth_url(monkeypatch, tmp_path):
+    secrets = tmp_path / "client.json"
+    secrets.write_text(json.dumps({"installed": {"client_id": "cid"}}))
+    monkeypatch.setenv("GMAIL_CLIENT_SECRETS_PATH", str(secrets))
+    monkeypatch.setenv("GMAIL_REDIRECT_URI", "https://example.com/callback")
+    url = build_gmail_oauth_url("state123")
+    assert "state123" in url
+    assert "client_id=cid" in url
 
 
 def test_all_google_tools_registered():

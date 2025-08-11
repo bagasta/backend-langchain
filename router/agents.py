@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from config.schema import AgentConfig
 from agents.runner import run_custom_agent
+from agents.tools.registry import get_auth_urls
 from database.client import create_agent_record, get_agent_config
 
 router = APIRouter()
@@ -28,7 +29,11 @@ async def create_agent(payload: CreateAgentRequest):
         agent_id = create_agent_record(payload.owner_id, payload.name, payload.config)
     except Exception as exc:  # pragma: no cover - DB errors
         raise HTTPException(status_code=500, detail=str(exc))
-    return {"agent_id": agent_id}
+    auth_urls = get_auth_urls(payload.config.tools, state=agent_id)
+    response = {"agent_id": agent_id}
+    if auth_urls:
+        response["auth_urls"] = auth_urls
+    return response
 
 @router.post("/{agent_id}/run", summary="Run an agent by ID")
 async def run_agent(agent_id: str, payload: RunAgentRequest):

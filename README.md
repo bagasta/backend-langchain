@@ -11,8 +11,9 @@ Backend framework for building configurable LangChain agents through a REST API.
 - For the `spreadsheet` tool, `GOOGLE_APPLICATION_CREDENTIALS` must point to a Google service-account JSON. Optionally set
   `SPREADSHEET_ID` to avoid passing the sheet ID in every request; worksheet names are matched case-insensitively and default to
   the first sheet when omitted. Set `SPREADSHEET_TIMEOUT` (seconds) to limit request time and surface logs if Google API calls hang.
-- For Gmail tools, set `GMAIL_TOKEN_PATH` and `GMAIL_CLIENT_SECRETS_PATH` to your OAuth token and client secrets files. Override
-  `GMAIL_SCOPES` to customize API permissions.
+- For Gmail tools, set `GMAIL_TOKEN_PATH` and `GMAIL_CLIENT_SECRETS_PATH` to your OAuth token and client secrets files. Provide
+  `GMAIL_REDIRECT_URI` for OAuth callbacks and override `GMAIL_SCOPES` to customize API permissions. When an agent is created
+  with Gmail tools, the API returns an `auth_urls.gmail` link that users can visit to grant access.
 
 ## Setup
 ```bash
@@ -48,7 +49,7 @@ curl -X POST http://localhost:8000/agents/ \
         }
       }'
 ```
-The backend builds a LangChain **tool-calling agent** capable of invoking multiple tools in sequence. Only `conversational-react-description` and `chat-conversational-react-description` types are accepted; other `agent_type` values (e.g., `openai-functions`) will raise an error.
+The backend builds a LangChain **tool-calling agent** capable of invoking multiple tools in sequence. Only `conversational-react-description` and `chat-conversational-react-description` types are accepted; other `agent_type` values (e.g., `openai-functions`) will raise an error. If Gmail tools are included, the response also contains an `auth_urls.gmail` login link for granting access.
 
 Run the agent by ID:
 ```bash

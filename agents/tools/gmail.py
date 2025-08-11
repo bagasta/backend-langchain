@@ -6,6 +6,8 @@ return a helpful error message instead of raising at import time.
 """
 
 from langchain.agents import Tool
+from urllib.parse import urlencode
+import json
 import os
 
 try:  # pragma: no cover - depends on Google API setup
@@ -54,4 +56,50 @@ except Exception as e:  # pragma: no cover - handled in tests
         description="Send an email via Gmail",
     )
 
-__all__ = ["gmail_search_tool", "gmail_send_message_tool"]
+
+def build_gmail_oauth_url(state: str | None = None) -> str | None:
+    """Return an OAuth login URL for Gmail if credentials permit.
+
+    The function reads ``GMAIL_CLIENT_SECRETS_PATH`` to extract a client ID and
+    ``GMAIL_REDIRECT_URI`` for the OAuth callback. When either value is missing
+    or the secrets file lacks a client ID, ``None`` is returned.
+    """
+
+    secrets_path = os.getenv("GMAIL_CLIENT_SECRETS_PATH")
+    redirect_uri = os.getenv("GMAIL_REDIRECT_URI")
+    scopes = os.getenv(
+        "GMAIL_SCOPES",
+        "https://www.googleapis.com/auth/gmail.modify",
+    ).split(",")
+    if not secrets_path or not redirect_uri:
+        return None
+
+    try:
+        with open(secrets_path) as f:
+            data = json.load(f)
+        client_id = (
+            data.get("installed", {}).get("client_id")
+            or data.get("web", {}).get("client_id")
+        )
+    except Exception:  # pragma: no cover - missing/invalid secrets
+        return None
+    if not client_id:
+        return None
+
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": " ".join(scopes),
+        "access_type": "offline",
+        "prompt": "consent",
+    }
+    if state:
+        params["state"] = state
+    return "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
+
+__all__ = [
+    "gmail_search_tool",
+    "gmail_send_message_tool",
+    "build_gmail_oauth_url",
+]

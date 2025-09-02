@@ -43,7 +43,12 @@ async def run_agent(agent_id: str, payload: RunAgentRequest):
             config.openai_api_key = payload.openai_api_key
         result = run_custom_agent(agent_id, config, payload.message)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        msg = str(exc)
+        # If the agent failed during execution (e.g., tool/LLM error), return 200 with the error text
+        # so frontends that expect a normal response can display it, while preserving 400s for config errors.
+        if msg.startswith("Agent execution failed:"):
+            return {"response": msg}
+        raise HTTPException(status_code=400, detail=msg)
     except Exception as exc:  # pragma: no cover - runtime errors
         raise HTTPException(status_code=500, detail=str(exc))
     return {"response": result}

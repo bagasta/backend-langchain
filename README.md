@@ -11,9 +11,19 @@ Backend framework for building configurable LangChain agents through a REST API.
 - For the `spreadsheet` tool, `GOOGLE_APPLICATION_CREDENTIALS` must point to a Google service-account JSON. Optionally set
   `SPREADSHEET_ID` to avoid passing the sheet ID in every request; worksheet names are matched case-insensitively and default to
   the first sheet when omitted. Set `SPREADSHEET_TIMEOUT` (seconds) to limit request time and surface logs if Google API calls hang.
-- For Gmail tools, set `GMAIL_TOKEN_PATH` and `GMAIL_CLIENT_SECRETS_PATH` to your OAuth token and client secrets files. Provide
-  `GMAIL_REDIRECT_URI` for OAuth callbacks and override `GMAIL_SCOPES` to customize API permissions. When an agent is created
-  with Gmail tools, the API returns an `auth_urls.gmail` link that users can visit to grant access.
+- For Gmail tools, you can now drop your OAuth files in a project folder instead of using absolute paths:
+  - Preferred: place `credentials.json` (client secrets) and optionally `token.json` under `./.credentials/gmail/`.
+  - Or set `GMAIL_CREDENTIALS_DIR` (or `CREDENTIALS_DIR` + `/gmail`) to point elsewhere; defaults to `./.credentials/gmail`.
+  - You can still override paths via `GMAIL_CLIENT_SECRETS_PATH` and `GMAIL_TOKEN_PATH`.
+  - If neither is set, the backend also falls back to `GOOGLE_APPLICATION_CREDENTIALS` for locating `credentials.json`.
+  - Set `GMAIL_REDIRECT_URI` for OAuth callbacks and override `GMAIL_SCOPES` to customize API permissions.
+  When an agent is created with Gmail tools, the API returns an `auth_urls.gmail` link users can visit to grant access. After the first OAuth flow, `token.json` will be created/used automatically.
+
+### Gmail OAuth callback
+
+- The backend exposes an OAuth callback endpoint at `/oauth/gmail/callback`.
+- Configure `GMAIL_REDIRECT_URI` to point to it (e.g., `http://localhost:8000/oauth/gmail/callback`).
+- After visiting the `auth_urls.gmail` link, Google redirects back to this endpoint and the server saves the token to `token.json` under your credentials directory.
 
 ## Setup
 ```bash

@@ -25,14 +25,20 @@ def build_agent(config: AgentConfig):
             "OpenAI API key not provided. Set OPENAI_API_KEY env var or include openai_api_key in config."
         )
     try:
+        # langchain_openai.ChatOpenAI expects `model` and `api_key`
         llm = ChatOpenAI(
-            model_name=config.model_name,
+            model=config.model_name,
             temperature=0,
-            openai_api_key=api_key,
+            api_key=api_key,
         )
     except ValidationError as exc:
+        # Surface validation issues clearly (e.g., bad field names)
+        raise ValueError(str(exc)) from exc
+    except TypeError as exc:
+        # Backward-compat or signature mismatch
         raise ValueError(
-            "OpenAI API key not provided. Set OPENAI_API_KEY env var or include openai_api_key in config."
+            "Failed to initialize OpenAI chat model. Ensure `model` is valid (e.g., 'gpt-4o-mini') "
+            "and the OpenAI API key is set."
         ) from exc
 
     # 2. Gather tools from registry

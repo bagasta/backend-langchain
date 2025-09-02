@@ -35,6 +35,9 @@ TOOL_REGISTRY = {
     "google_lens": google_lens_tool,
     "gmail_search": gmail_search_tool,
     "gmail_send_message": gmail_send_message_tool,
+    # helpful aliases for LLMs
+    "send_email": gmail_send_message_tool,
+    "email_send": gmail_send_message_tool,
     "calc": calc_tool,
     "websearch": websearch_tool,
     "spreadsheet": spreadsheet_tool,

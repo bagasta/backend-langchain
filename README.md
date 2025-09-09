@@ -16,8 +16,68 @@ Backend framework for building configurable LangChain agents through a REST API.
   - Or set `GMAIL_CREDENTIALS_DIR` (or `CREDENTIALS_DIR` + `/gmail`) to point elsewhere; defaults to `./.credentials/gmail`.
   - You can still override paths via `GMAIL_CLIENT_SECRETS_PATH` and `GMAIL_TOKEN_PATH`.
   - If neither is set, the backend also falls back to `GOOGLE_APPLICATION_CREDENTIALS` for locating `credentials.json`.
+  - For convenience, the server will also look for `credentials.json` and `token.json` at the project root if present.
   - Set `GMAIL_REDIRECT_URI` for OAuth callbacks and override `GMAIL_SCOPES` to customize API permissions.
   When an agent is created with Gmail tools, the API returns an `auth_urls.gmail` link users can visit to grant access. After the first OAuth flow, `token.json` will be created/used automatically.
+
+  Gmail tools include:
+  - `gmail`: unified Gmail node (like n8n) with `action` = `read | search | send | get`. Fields:
+    - read: `query?`, `max_results?`, `mark_as_read?`
+    - search: `query`, `max_results?`
+    - send: `to`, `subject`, `message`, `is_html?`
+    - get: `message_id`, `format?` (one of `minimal|full|raw|metadata`)
+  - `gmail_get_message`: fetch a single Gmail message by `message_id` (optionally `format`)
+  - `gmail_search`: search messages (subjects, from, snippet) using a Gmail query
+  - `gmail_read_messages`: read recent messages (defaults to `in:inbox is:unread`) and return bodies; supports `max_results` and `mark_as_read`
+  - `gmail_send_message`: send an email (plain text or HTML)
+
+  Notes:
+  - If you include any Gmail tool (including the unified `"gmail"`) when creating an agent, the server automatically enables all core actions by expanding the tool list to include `gmail_read_messages`, `gmail_get_message`, and `gmail_send_message` as well.
+  - The create‑agent response will include a single `auth_urls.gmail` link covering all Gmail actions.
+
+  Direct testing endpoints (outside agent loop):
+  - `GET /gmail/status` — shows credential paths, scopes, and connection status
+  - `POST /gmail/send` — send an email with JSON body `{to, subject, message}`
+  - `POST /gmail/read` — read messages with JSON body `{query?, max_results?, mark_as_read?}`
+
+### Google OAuth (Gmail + Calendar)
+
+- Use a single redirect URI for both Gmail and Calendar:
+  - Set `GOOGLE_OAUTH_REDIRECT_URI` (or `OAUTH_REDIRECT_URI`) to point to the universal callback: `/oauth/google/callback`.
+  - Add that URI to your Google OAuth "Web application" client's Authorized redirect URIs.
+  - The server infers provider(s) from the scopes and writes tokens to the correct files.
+- You can still use provider-specific callbacks if you prefer:
+  - Gmail: set `GMAIL_REDIRECT_URI` → `/oauth/gmail/callback`
+  - Calendar: set `GCAL_REDIRECT_URI` → `/oauth/calendar/callback`
+- Place the client secrets at `./credential_folder/credentials.json` (or set `GMAIL_CLIENT_SECRETS_PATH`/`GCAL_CLIENT_SECRETS_PATH`).
+- Tokens
+  - Gmail token: `GMAIL_TOKEN_PATH` (default `credential_folder/token.json`)
+  - Calendar token: `GCAL_TOKEN_PATH` (default `credential_folder/calendar_token.json`)
+  - Docs token: `GDOCS_TOKEN_PATH` (default `credential_folder/docs_token.json`)
+  - Tokens are separate by default to avoid scope conflicts.
+
+### Google Maps (API key)
+
+- Set `GOOGLE_MAPS_API_KEY` (or `MAPS_API_KEY`) in your environment.
+- Available tools:
+  - `google_maps` (unified): actions = `geocode | reverse_geocode | directions | distance_matrix | timezone | nearby`.
+    Example (directions):
+    `{ "action": "directions", "origin": "Jakarta", "destination": "Bandung", "mode": "driving" }`
+  - Convenience aliases:
+    - `maps_geocode`: input = address string
+    - `maps_directions`: input = `origin|destination|mode?` (e.g., `Jakarta|Bandung|driving`)
+    - `maps_distance_matrix`: input = `origin|destination|mode?`
+    - `maps_nearby`: input = `address|type|radius?` or `lat,lng|type|radius?` (e.g., `Clevio Coder Camp|pharmacy` or `-6.2,106.8|pharmacy|1500`). If you omit radius, the tool ranks by distance and requires a `type` or `keyword`.
+
+### Google Docs (OAuth)
+
+- Scopes: `https://www.googleapis.com/auth/documents, https://www.googleapis.com/auth/drive.file` (override with `GDOCS_SCOPES`).
+- Redirect: use the universal `GOOGLE_OAUTH_REDIRECT_URI` or set `GDOCS_REDIRECT_URI` and add it to your OAuth client.
+- Token path: `GDOCS_TOKEN_PATH` (default `credential_folder/docs_token.json`).
+- Tools:
+  - `google_docs` (unified): actions = `create|get|append|export`
+  - `docs_create`, `docs_get`, `docs_append`, `docs_export_pdf` (convenience actions)
+  - `docs_export_pdf` saves to `./exports/{document_id}.pdf` on the server.
 
 ### Gmail OAuth callback
 
@@ -25,15 +85,20 @@ Backend framework for building configurable LangChain agents through a REST API.
 - Configure `GMAIL_REDIRECT_URI` to point to it (e.g., `http://localhost:8000/oauth/gmail/callback`).
 - After visiting the `auth_urls.gmail` link, Google redirects back to this endpoint and the server saves the token to `token.json` under your credentials directory.
 
+Scopes
+- Default scopes: `gmail.modify` and `gmail.send` (sufficient for reading, marking read, and sending).
+- For the broadest compatibility with Gmail operations (similar to n8n's Gmail node), you may use the full scope `https://mail.google.com/` by setting `GMAIL_SCOPES=https://mail.google.com/` before authorizing.
+
 ## Setup
 ```bash
 pip install -r requirements.txt
 npm install
-cd database/prisma && npx prisma migrate deploy && cd ../..
+cd database/prisma && npx prisma migrate deploy && npx prisma generate && cd ../..
 ```
 
-The Python database wrapper automatically runs `prisma migrate deploy` and `prisma generate` before each operation to keep the
-Prisma client in sync with the schema. Still, ensure your PostgreSQL instance is reachable via `DATABASE_URL`.
+By default, the backend no longer runs Prisma CLI on every request. This avoids slow responses and timeouts caused by repeatedly
+running `npx prisma migrate deploy`/`generate` in-process. Do an explicit one-time setup as shown above. If you prefer the old
+behavior, set `PRISMA_AUTO_SYNC=true` (it will run once per process) and optionally tune `PRISMA_CMD_TIMEOUT` (seconds).
 
 ## Running the API
 ```bash
@@ -83,12 +148,48 @@ When `memory_enabled` is `true`, each agent stores its conversation history usin
 
 History is keyed by the agent ID, so subsequent runs recall prior messages when using a persistent backend.
 
+## Timeouts and Reliability
+- Database (Prisma) calls respect `PRISMA_CMD_TIMEOUT` (default 15s). Ensure `DATABASE_URL` points to a reachable Postgres server.
+  For automatic sync at startup, set `PRISMA_AUTO_SYNC=true`.
+- OpenAI chat requests use `OPENAI_TIMEOUT` (default 30s) and `OPENAI_MAX_RETRIES` (default 1).
+- Gmail REST operations use `GMAIL_HTTP_TIMEOUT` (default 20s) to prevent long hangs.
+- Agent config caching: fetched configs are cached in-process for `AGENT_CACHE_TTL` seconds (default 300). If Prisma fails
+  transiently on later requests, the cache avoids the DB round-trip so agents can keep responding.
+
 ## Extending
 - **Tools**: add a module under `agents/tools/` and register it in `agents/tools/registry.py`.
-  Built-in tools include math evaluation (`calc`), numerous Google integrations (`google_search`, `google_serper`, `google_trends`, `google_places`, `google_finance`, `google_cloud_text_to_speech`, `google_jobs`, `google_scholar`, `google_books`, `google_lens`, `gmail_search`, `gmail_send_message`), an OpenAI-powered product lookup (`websearch`), and Google Sheets operations (`spreadsheet`).
+  Built-in tools include math evaluation (`calc`), numerous Google integrations (`google_search`, `google_serper`, `google_trends`, `google_places`, `google_finance`, `google_cloud_text_to_speech`, `google_jobs`, `google_scholar`, `google_books`, `google_lens`, `google_maps`, `gmail_search`, `gmail_read_messages`, `gmail_send_message`), an OpenAI-powered product lookup (`websearch`), and Google Sheets operations (`spreadsheet`).
 - **Memory**: modify or extend `agents/memory.py`.
 
 ## Testing
 ```bash
 pytest
 ```
+- To bypass database lookups entirely, you can pass the full config in the run payload:
+```bash
+curl -X POST http://localhost:8000/agents/{agent_id}/run \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "message": "What is 2 + 2?",
+        "config": {
+          "model_name": "gpt-4o-mini",
+          "system_message": "You are a helpful bot",
+          "tools": ["calc"],
+          "memory_enabled": false
+        }
+      }'
+```
+- Warm caches to speed up runs:
+```bash
+# Single agent
+curl -X POST http://localhost:8000/agents/{agent_id}/warm
+
+# All agents
+curl -X POST http://localhost:8000/agents/warm_all
+```
+
+Bypassing the database on /run
+- The run endpoint can be made DB-free for maximum responsiveness:
+  - Preferred: warm the cache (as above). When `RUN_BYPASS_DB=true` (default), `/agents/{agent_id}/run` reads config from cache only.
+    If a config is not cached, the API returns 400 with guidance to warm or pass `config` inline.
+  - Or pass the full `config` with the run request so no cache or DB is required.

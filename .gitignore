@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 .credentials/
 credential_folder/
+database/cache/
+credential_foldertoken.json

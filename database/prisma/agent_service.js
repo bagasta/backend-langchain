@@ -47,6 +47,9 @@ async function main() {
       where: { id: payload.agent_id },
     });
     console.log(JSON.stringify(agent));
+  } else if (command === 'list') {
+    const agents = await prisma.agent.findMany({});
+    console.log(JSON.stringify(agents));
   }
 }
 

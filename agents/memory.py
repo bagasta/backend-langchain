@@ -43,7 +43,15 @@ def _load_sql_history(session_id: str) -> BaseChatMessageHistory:
         return ChatMessageHistory()
 
     try:
-        engine = create_engine(db_url)
+        timeout = int(os.getenv("DB_CONNECT_TIMEOUT", "3"))
+        engine = create_engine(db_url, connect_args={"connect_timeout": timeout})
+        # Fail fast if DB is unreachable
+        try:
+            with engine.connect() as conn:
+                pass
+        except Exception:
+            logging.warning("DB unreachable for SQL memory; using in-memory history instead")
+            return ChatMessageHistory()
         return SQLChatMessageHistory(session_id=session_id, connection=engine)
     except ModuleNotFoundError as exc:  # pragma: no cover - depends on optional deps
         logging.warning("%s; falling back to ephemeral in-memory conversation store", exc)
@@ -71,4 +79,3 @@ def get_history_loader(backend: MemoryBackend) -> Callable[[str], BaseChatMessag
     if backend == MemoryBackend.FILE:
         return _load_file_history
     return lambda _session_id: ChatMessageHistory()
-

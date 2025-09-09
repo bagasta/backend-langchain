@@ -55,14 +55,18 @@ def gmail_status():
     secrets_candidates = [
         os.getenv("GMAIL_CLIENT_SECRETS_PATH"),
         os.path.join(creds_dir, "credentials.json"),
+        os.path.join(os.getcwd(), "credentials.json"),
         os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
     ]
     secrets_path = next((p for p in secrets_candidates if p and os.path.exists(p)), None) or os.path.join(
         creds_dir, "credentials.json"
     )
-    token_path = os.getenv("GMAIL_TOKEN_PATH") or os.path.join(
-        creds_dir, "token.json"
-    )
+    token_candidates = [
+        os.getenv("GMAIL_TOKEN_PATH"),
+        os.path.join(creds_dir, "token.json"),
+        os.path.join(os.getcwd(), "token.json"),
+    ]
+    token_path = next((p for p in token_candidates if p and os.path.exists(p)), os.path.join(creds_dir, "token.json"))
     redirect_uri = os.getenv("GMAIL_REDIRECT_URI")
     scopes_cfg = os.getenv(
         "GMAIL_SCOPES",
@@ -108,7 +112,8 @@ def gmail_status():
                     error = f"service build failed: {e}"
                     try:
                         authed = AuthorizedSession(creds)
-                        r = authed.get("https://gmail.googleapis.com/gmail/v1/users/me/profile")
+                        timeout = float(os.getenv("GMAIL_HTTP_TIMEOUT", "20"))
+                        r = authed.get("https://gmail.googleapis.com/gmail/v1/users/me/profile", timeout=timeout)
                         if r.ok:
                             profile_ok = True
                             service_init_ok = True
@@ -158,9 +163,12 @@ class DrySendResponse(BaseModel):
 @router.post("/gmail/dry_send", response_model=DrySendResponse)
 def gmail_dry_send(payload: DrySendRequest):
     creds_dir = _gmail_creds_dir()
-    token_path = os.getenv("GMAIL_TOKEN_PATH") or os.path.join(
-        creds_dir, "token.json"
-    )
+    token_candidates = [
+        os.getenv("GMAIL_TOKEN_PATH"),
+        os.path.join(creds_dir, "token.json"),
+        os.path.join(os.getcwd(), "token.json"),
+    ]
+    token_path = next((p for p in token_candidates if p and os.path.exists(p)), os.path.join(creds_dir, "token.json"))
     scopes_cfg = os.getenv(
         "GMAIL_SCOPES",
         "https://www.googleapis.com/auth/gmail.modify,https://www.googleapis.com/auth/gmail.send",
@@ -212,9 +220,12 @@ class SendResponse(BaseModel):
 @router.post("/gmail/send", response_model=SendResponse)
 def gmail_send(payload: SendRequest):
     creds_dir = _gmail_creds_dir()
-    token_path = os.getenv("GMAIL_TOKEN_PATH") or os.path.join(
-        creds_dir, "token.json"
-    )
+    token_candidates = [
+        os.getenv("GMAIL_TOKEN_PATH"),
+        os.path.join(creds_dir, "token.json"),
+        os.path.join(os.getcwd(), "token.json"),
+    ]
+    token_path = next((p for p in token_candidates if p and os.path.exists(p)), os.path.join(creds_dir, "token.json"))
     scopes_cfg = os.getenv(
         "GMAIL_SCOPES",
         "https://www.googleapis.com/auth/gmail.modify,https://www.googleapis.com/auth/gmail.send",
@@ -252,9 +263,11 @@ def gmail_send(payload: SendRequest):
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
 
         authed = AuthorizedSession(creds)
+        timeout = float(os.getenv("GMAIL_HTTP_TIMEOUT", "20"))
         resp = authed.post(
             "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
             json={"raw": raw},
+            timeout=timeout,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -273,3 +286,154 @@ def gmail_send(payload: SendRequest):
         else:
             msg += f": {exc}"
         return SendResponse(ok=False, error=msg)
+
+
+class ReadRequest(BaseModel):
+    query: Optional[str] = None
+    max_results: int = 5
+    mark_as_read: bool = False
+
+
+class ReadResponse(BaseModel):
+    ok: bool
+    messages: Optional[List[dict]] = None
+    error: Optional[str] = None
+
+
+@router.post("/gmail/read", response_model=ReadResponse)
+def gmail_read(payload: ReadRequest):
+    creds_dir = _gmail_creds_dir()
+    token_candidates = [
+        os.getenv("GMAIL_TOKEN_PATH"),
+        os.path.join(creds_dir, "token.json"),
+        os.path.join(os.getcwd(), "token.json"),
+    ]
+    token_path = next((p for p in token_candidates if p and os.path.exists(p)), os.path.join(creds_dir, "token.json"))
+    scopes_cfg = os.getenv(
+        "GMAIL_SCOPES",
+        "https://www.googleapis.com/auth/gmail.modify,https://www.googleapis.com/auth/gmail.send",
+    ).split(",")
+
+    if not os.path.exists(token_path):
+        raise HTTPException(status_code=400, detail="token.json not found; authorize first")
+    if not Credentials:
+        raise HTTPException(status_code=500, detail="google-auth not available")
+
+    try:
+        creds = Credentials.from_authorized_user_file(token_path, scopes=scopes_cfg)
+        if not creds.valid and creds.refresh_token:
+            creds.refresh(GARequest())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"credentials load/refresh failed: {e}")
+
+    granted = list(creds.scopes or [])
+    if not any(("gmail.readonly" in s) or ("gmail.modify" in s) for s in granted):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Insufficient scopes (gmail.readonly or gmail.modify). Delete token.json, include one of them in GMAIL_SCOPES, and re-authorize."
+            ),
+        )
+
+    try:
+        authed = AuthorizedSession(creds)
+        timeout = float(os.getenv("GMAIL_HTTP_TIMEOUT", "20"))
+        q = payload.query or "in:inbox is:unread"
+        max_results = max(1, min(50, int(payload.max_results or 5)))
+        resp = authed.get(
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+            params={"q": q, "maxResults": max_results},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        messages = data.get("messages", []) or []
+
+        import base64
+
+        def _b64url_decode(s: str) -> str:
+            try:
+                s = s + "=" * (-len(s) % 4)
+                return base64.urlsafe_b64decode(s.encode("utf-8")).decode("utf-8", errors="ignore")
+            except Exception:
+                return ""
+
+        def _extract_bodies(payload: dict) -> tuple[str | None, str | None]:
+            mime = (payload or {}).get("mimeType")
+            body = (payload or {}).get("body") or {}
+            data = body.get("data")
+            text_plain = None
+            text_html = None
+            if mime == "text/plain" and data:
+                text_plain = _b64url_decode(data)
+            elif mime == "text/html" and data:
+                text_html = _b64url_decode(data)
+            parts = (payload or {}).get("parts") or []
+            for p in parts:
+                tp, th = _extract_bodies(p)
+                text_plain = text_plain or tp
+                text_html = text_html or th
+                if text_plain and text_html:
+                    break
+            return text_plain, text_html
+
+        out: List[dict] = []
+        for m in messages:
+            mid = m.get("id")
+            if not mid:
+                continue
+            det = authed.get(
+                f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{mid}",
+                params={"format": "full"},
+                timeout=timeout,
+            )
+            det.raise_for_status()
+            md = det.json()
+            headers = {
+                h.get("name", "").lower(): h.get("value")
+                for h in (md.get("payload", {}) or {}).get("headers", []) or []
+            }
+            text_plain, text_html = _extract_bodies(md.get("payload", {}) or {})
+            max_chars = int(os.getenv("GMAIL_MAX_BODY_CHARS", "8000"))
+            if text_plain and len(text_plain) > max_chars:
+                text_plain = text_plain[:max_chars]
+            if text_html and len(text_html) > max_chars:
+                text_html = text_html[:max_chars]
+            out.append(
+                {
+                    "id": mid,
+                    "threadId": md.get("threadId"),
+                    "labelIds": md.get("labelIds", []),
+                    "subject": headers.get("subject"),
+                    "from": headers.get("from"),
+                    "date": headers.get("date"),
+                    "snippet": md.get("snippet"),
+                    "body_text": text_plain,
+                    "body_html": text_html,
+                }
+            )
+            if payload.mark_as_read and "UNREAD" in (md.get("labelIds") or []):
+                try:
+                    authed.post(
+                        f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{mid}/modify",
+                        json={"removeLabelIds": ["UNREAD"]},
+                        timeout=timeout,
+                    )
+                except Exception:
+                    pass
+
+        return ReadResponse(ok=True, messages=out)
+    except Exception as exc:
+        try:
+            err = resp.json().get("error", {})  # type: ignore[name-defined]
+            detail = err.get("message")
+            code = err.get("code")
+        except Exception:
+            detail = None
+            code = None
+        msg = f"read failed ({code})" if code else "read failed"
+        if detail:
+            msg += f": {detail}"
+        else:
+            msg += f": {exc}"
+        return ReadResponse(ok=False, error=msg)

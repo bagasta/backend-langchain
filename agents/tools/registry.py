@@ -363,6 +363,76 @@ def get_tools_by_names(names: list[str]):
     return tools
 
 
+def _build_unified_google_oauth_url(state: str | None = None) -> str | None:
+    """Build a single Google OAuth URL with union scopes (Gmail + Calendar + Docs).
+
+    Uses GOOGLE_OAUTH_REDIRECT_URI (or OAUTH_REDIRECT_URI) and the first
+    available client secrets among Gmail/Calendar/Docs candidates.
+    """
+    import os
+    import json
+    from urllib.parse import urlencode
+    # Candidate secrets across providers
+    cands = [
+        os.getenv("GMAIL_CLIENT_SECRETS_PATH"),
+        os.getenv("GCAL_CLIENT_SECRETS_PATH"),
+        (os.path.join(os.getenv("GCAL_CREDENTIALS_PATH", ""), "credentials.json")
+         if os.getenv("GCAL_CREDENTIALS_PATH") and os.path.isdir(os.getenv("GCAL_CREDENTIALS_PATH", ""))
+         else os.getenv("GCAL_CREDENTIALS_PATH")),
+        os.getenv("GDOCS_CLIENT_SECRETS_PATH"),
+        (os.path.join(os.getenv("GDOCS_CREDENTIALS_PATH", ""), "credentials.json")
+         if os.getenv("GDOCS_CREDENTIALS_PATH") and os.path.isdir(os.getenv("GDOCS_CREDENTIALS_PATH", ""))
+         else os.getenv("GDOCS_CREDENTIALS_PATH")),
+        os.path.join(os.getcwd(), "credential_folder", "credentials.json"),
+        os.path.join(os.getcwd(), "credentials.json"),
+        os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
+    ]
+    secrets_path = next((p for p in cands if p and os.path.exists(p)), None)
+    redirect_uri = (
+        os.getenv("GOOGLE_OAUTH_REDIRECT_URI")
+        or os.getenv("OAUTH_REDIRECT_URI")
+    )
+    if not secrets_path or not redirect_uri or not os.path.exists(secrets_path):
+        return None
+    try:
+        with open(secrets_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        cid = (data.get("web", {}) or {}).get("client_id") or (data.get("installed", {}) or {}).get("client_id")
+        if not cid:
+            return None
+    except Exception:
+        return None
+    # Union scopes from modules
+    try:
+        from .gmail import SCOPES as GMAIL_SCOPES
+    except Exception:
+        GMAIL_SCOPES = []
+    try:
+        from .google_calendar import SCOPES as GCAL_SCOPES
+    except Exception:
+        GCAL_SCOPES = []
+    try:
+        from .google_docs import SCOPES as GDOCS_SCOPES
+    except Exception:
+        GDOCS_SCOPES = []
+    scopes = []
+    for s in list(GMAIL_SCOPES) + list(GCAL_SCOPES) + list(GDOCS_SCOPES):
+        s = (s or "").strip()
+        if s and s not in scopes:
+            scopes.append(s)
+    params = {
+        "client_id": cid,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": " ".join(scopes),
+        "access_type": "offline",
+        "prompt": "consent",
+    }
+    if state:
+        params["state"] = state
+    return "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
+
+
 def get_auth_urls(names: list[str], state: str | None = None) -> dict[str, str]:
     """Return OAuth login URLs for selected tools.
 
@@ -372,13 +442,27 @@ def get_auth_urls(names: list[str], state: str | None = None) -> dict[str, str]:
 
     final_names = expand_tool_names(names)
     urls: dict[str, str] = {}
+
+    # Detect any Google providers among the requested tools
+    lower = {n.lower() for n in final_names}
+    google_related = any(
+        (n.startswith("gmail")) or (n in _CALENDAR_TOOL_NAMES) or (n in {"google_docs", "docs", "docs_create", "docs_get", "docs_append", "docs_export_pdf"})
+        for n in lower
+    )
+
+    if google_related:
+        unified = _build_unified_google_oauth_url(state=state)
+        if unified:
+            urls["google"] = unified
+
+    # Preserve other providers (non-Google) if any are added later
     for name in final_names:
         name_lower = name.lower()
+        if name_lower.startswith("gmail") or (name_lower in _CALENDAR_TOOL_NAMES) or (name_lower in {"google_docs", "docs", "docs_create", "docs_get", "docs_append", "docs_export_pdf"}):
+            continue
         builder = AUTH_URL_BUILDERS.get(name) or AUTH_URL_BUILDERS.get(name_lower)
         if builder:
             url = builder(state=state)
             if url:
-                # Map to a provider key so multiple tools share one link per provider
-                provider = "gmail" if name_lower.startswith("gmail") else ("calendar" if name_lower in _CALENDAR_TOOL_NAMES else name_lower)
-                urls.setdefault(provider, url)
+                urls.setdefault(name_lower, url)
     return urls

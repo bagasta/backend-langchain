@@ -7,17 +7,19 @@ async function main() {
     data: {
       email: "admin@example.com",
       name: "Admin",
-      agents: {
-        create: {
-          name: "Agent CS",
-          modelName: "gpt-4",
-          systemMessage: "Kamu adalah CS ramah.",
-          tools: ["google", "calc"],
-        }
-      }
     }
   })
-  console.log("Seeded:", user)
+
+  const agent = await prisma.agent.create({
+    data: {
+      user_id: user.id,
+      nama_model: "gpt-4",
+      system_message: "Kamu adalah CS ramah.",
+      tools: JSON.stringify(["google", "calc"]),
+      agent_type: "chat-conversational-react-description",
+    }
+  })
+  console.log("Seeded:", { user, agent })
 }
 
 main()

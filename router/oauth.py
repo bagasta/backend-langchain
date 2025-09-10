@@ -3,6 +3,7 @@ from pydantic import BaseModel
 import os
 import json
 from typing import Optional
+from database.client import save_agent_google_token
 
 try:
     from google_auth_oauthlib.flow import Flow
@@ -388,6 +389,35 @@ async def google_oauth_callback(request: Request):
             written_paths.append(dtok)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Saving Docs token failed: {exc}")
+
+    # Persist a unified token per agent (list_account) if state carries agent_id
+    # Try to obtain the Google account email via Gmail profile when scopes allow
+    email_for_store: Optional[str] = None
+    try:
+        from google.auth.transport.requests import AuthorizedSession  # type: ignore
+        granted_scopes = list(credentials.scopes or [])
+        if any(("gmail" in s) or ("mail.google.com" in s) for s in granted_scopes):
+            try:
+                authed = AuthorizedSession(credentials)
+                r = authed.get("https://gmail.googleapis.com/gmail/v1/users/me/profile", timeout=10)
+                if r.ok:
+                    profile = r.json()
+                    email_for_store = profile.get("emailAddress")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    if state:
+        try:
+            save_agent_google_token(
+                agent_id=state,
+                email=email_for_store or "unknown@googleuser.local",
+                token=json.loads(credentials.to_json()),
+            )
+        except Exception:
+            # Do not block OAuth flow on DB errors
+            pass
 
     # Try to hot-reload tools (optional to avoid slow callbacks)
     if os.getenv("OAUTH_HOT_RELOAD", "false").lower() == "true":

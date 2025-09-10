@@ -2,6 +2,10 @@
 
 Backend framework for building configurable LangChain agents through a REST API.
 
+Quick links:
+- API Reference: `docs/API_REFERENCE.md`
+- Database Structure: `docs/DB_SCHEMA.md`
+
 ## Prerequisites
 - Python 3.10+
 - Node.js 18+
@@ -18,7 +22,7 @@ Backend framework for building configurable LangChain agents through a REST API.
   - If neither is set, the backend also falls back to `GOOGLE_APPLICATION_CREDENTIALS` for locating `credentials.json`.
   - For convenience, the server will also look for `credentials.json` and `token.json` at the project root if present.
   - Set `GMAIL_REDIRECT_URI` for OAuth callbacks and override `GMAIL_SCOPES` to customize API permissions.
-  When an agent is created with Gmail tools, the API returns an `auth_urls.gmail` link users can visit to grant access. After the first OAuth flow, `token.json` will be created/used automatically.
+  When an agent includes any Google tools (Gmail/Calendar/Docs), the API returns a single `auth_urls.google` link for a unified OAuth flow that grants all scopes at once. The universal callback also stores the token per‑agent in the database table `list_account`.
 
   Gmail tools include:
   - `gmail`: unified Gmail node (like n8n) with `action` = `read | search | send | get`. Fields:
@@ -33,7 +37,7 @@ Backend framework for building configurable LangChain agents through a REST API.
 
   Notes:
   - If you include any Gmail tool (including the unified `"gmail"`) when creating an agent, the server automatically enables all core actions by expanding the tool list to include `gmail_read_messages`, `gmail_get_message`, and `gmail_send_message` as well.
-  - The create‑agent response will include a single `auth_urls.gmail` link covering all Gmail actions.
+  - The create‑agent response will include a single `auth_urls.google` link covering Gmail, Calendar, and Docs scopes.
 
   Direct testing endpoints (outside agent loop):
   - `GET /gmail/status` — shows credential paths, scopes, and connection status
@@ -55,6 +59,7 @@ Backend framework for building configurable LangChain agents through a REST API.
   - Calendar token: `GCAL_TOKEN_PATH` (default `credential_folder/calendar_token.json`)
   - Docs token: `GDOCS_TOKEN_PATH` (default `credential_folder/docs_token.json`)
   - Tokens are separate by default to avoid scope conflicts.
+  - Attendees convenience: when creating Calendar events, if an attendee address is given without a domain (e.g., `"bagasstorage"`), the server appends `@gmail.com` by default. Override the default domain with `GCAL_DEFAULT_EMAIL_DOMAIN` (e.g., `yourcompany.com`). Invalid addresses are ignored and surfaced in the response.
 
 ### Google Maps (API key)
 

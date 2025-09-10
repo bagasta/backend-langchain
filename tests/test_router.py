@@ -71,9 +71,9 @@ def test_create_agent_returns_gmail_auth_url(monkeypatch, tmp_path):
     data = response.json()
     assert data["agent_id"] == "id1"
     assert "auth_urls" in data
-    assert data["auth_urls"]["gmail"].startswith(
-        "https://accounts.google.com/o/oauth2/v2/auth?"
-    )
+    # unified google auth link preferred
+    auth = data["auth_urls"].get("google") or data["auth_urls"].get("gmail")
+    assert auth and auth.startswith("https://accounts.google.com/o/oauth2/v2/auth?")
 
 
 def test_run_agent_returns_400_on_iteration_limit(monkeypatch):

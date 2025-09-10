@@ -15,7 +15,7 @@ SCRIPT = PRISMA_DIR / "agent_service.js"
 CACHE_DIR = Path(__file__).resolve().parent / "cache" / "agents"
 
 # Optional: keep old behavior (migrate/generate) but only once per process
-_AUTO_SYNC = os.getenv("PRISMA_AUTO_SYNC", "false").lower() == "true"
+_AUTO_SYNC = os.getenv("PRISMA_AUTO_SYNC", "true").lower() == "true"
 _SYNC_DONE = False
 _CMD_TIMEOUT = float(os.getenv("PRISMA_CMD_TIMEOUT", "4"))  # seconds (short to fail fast)
 _CACHE_TTL = float(os.getenv("AGENT_CACHE_TTL", "300"))  # seconds, 5 minutes default
@@ -150,12 +150,12 @@ def create_agent_record(owner_id: str, name: str, config: AgentConfig) -> str:
     data = _run(
         "create",
         {
-            "ownerId": owner_id,
+            "ownerKey": owner_id,
             "name": name,
             "config": config.model_dump(exclude={"openai_api_key"}),
         },
     )
-    agent_id = data["id"]
+    agent_id = str(data["id"])  # BigInt stringified by node layer
     # Warm caches so immediate subsequent runs don't hit DB/Prisma
     try:
         _AGENT_CACHE[agent_id] = (config, time.time())
@@ -196,19 +196,28 @@ def get_agent_config(agent_id: str) -> AgentConfig:
             return cached[0]
         raise
 
+    # Map new DB fields to AgentConfig
+    tools_list: list[str]
+    raw_tools = data.get("tools")
+    if isinstance(raw_tools, list):
+        tools_list = raw_tools
+    else:
+        # stored as string (JSON); fallback to comma-split if plain text
+        try:
+            tools_list = list(json.loads(raw_tools or "[]"))
+        except Exception:
+            tools_list = [t.strip() for t in str(raw_tools or "").split(",") if t.strip()]
+
     payload = {
-        "model_name": data["modelName"],
-        "system_message": data["systemMessage"],
-        "tools": data["tools"],
-        "memory_enabled": data["memoryEnabled"],
-        "memory_backend": data.get("memoryBackend", "in_memory"),
+        "model_name": data.get("nama_model"),
+        "system_message": data.get("system_message"),
+        "tools": tools_list,
+        # Preserve memory defaults even if DB no longer stores them
+        "memory_enabled": False,
+        "memory_backend": "in_memory",
     }
-    if data.get("agentType") is not None:
-        payload["agent_type"] = data["agentType"]
-    if data.get("maxIterations") is not None:
-        payload["max_iterations"] = data["maxIterations"]
-    if data.get("maxExecutionTime") is not None:
-        payload["max_execution_time"] = data["maxExecutionTime"]
+    if data.get("agent_type") is not None:
+        payload["agent_type"] = data["agent_type"]
     cfg = AgentConfig(**payload)
     _AGENT_CACHE[agent_id] = (cfg, now)
     _write_cached_config(agent_id, cfg)
@@ -256,22 +265,29 @@ def warm_cache_for_all() -> dict:
     now = time.time()
     for row in rows:
         try:
-            agent_id = row.get("id")
+            agent_id = str(row.get("id"))
             if not agent_id:
                 continue
+            # Parse tools
+            tools_list: list[str]
+            raw_tools = row.get("tools")
+            if isinstance(raw_tools, list):
+                tools_list = raw_tools
+            else:
+                try:
+                    tools_list = list(json.loads(raw_tools or "[]"))
+                except Exception:
+                    tools_list = [t.strip() for t in str(raw_tools or "").split(",") if t.strip()]
+
             payload = {
-                "model_name": row.get("modelName"),
-                "system_message": row.get("systemMessage"),
-                "tools": row.get("tools", []) or [],
-                "memory_enabled": row.get("memoryEnabled", False),
-                "memory_backend": row.get("memoryBackend", "in_memory"),
+                "model_name": row.get("nama_model"),
+                "system_message": row.get("system_message"),
+                "tools": tools_list,
+                "memory_enabled": False,
+                "memory_backend": "in_memory",
             }
-            if row.get("agentType") is not None:
-                payload["agent_type"] = row.get("agentType")
-            if row.get("maxIterations") is not None:
-                payload["max_iterations"] = row.get("maxIterations")
-            if row.get("maxExecutionTime") is not None:
-                payload["max_execution_time"] = row.get("maxExecutionTime")
+            if row.get("agent_type") is not None:
+                payload["agent_type"] = row.get("agent_type")
             cfg = AgentConfig(**payload)
             _AGENT_CACHE[agent_id] = (cfg, now)
             _write_cached_config(agent_id, cfg)
@@ -279,6 +295,21 @@ def warm_cache_for_all() -> dict:
         except Exception:
             errors += 1
     return {"warmed": warmed, "skipped": skipped, "errors": errors, "total": len(rows)}
+
+
+def save_agent_google_token(agent_id: str, email: str, token: dict) -> None:
+    """Save or update a unified Google OAuth token for an agent into list_account.
+
+    Upserts on (user_id, agent_id, email) inside the Node layer.
+    """
+    _run(
+        "save_token",
+        {
+            "agent_id": agent_id,
+            "email": email,
+            "servicesaccount": token,
+        },
+    )
 
 
 def get_cached_agent_config(agent_id: str) -> AgentConfig | None:

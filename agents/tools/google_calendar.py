@@ -10,7 +10,7 @@ grant Calendar access.
 import os
 import datetime
 import logging
-from typing import Dict, List, Optional, Any, Union, Type
+from typing import Dict, List, Optional, Any, Union, Type, Tuple
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
@@ -113,6 +113,85 @@ class GoogleCalendarTools:
                 raise
 
     # -----------------------------
+    # Helpers
+    # -----------------------------
+    @staticmethod
+    def _parse_dt_local(dt_str: str, tz_name: str) -> datetime.datetime:
+        """Parse an ISO-ish datetime string and localize to tz.
+
+        - Accepts strings with or without timezone. Supports trailing 'Z'.
+        - If input has tzinfo, convert to target timezone.
+        - If input is naive, assume it is already in target timezone.
+        """
+        if not dt_str:
+            raise ValueError("Datetime string is required")
+        # Normalize Zulu suffix to +00:00 for fromisoformat
+        cleaned = dt_str.strip().replace("Z", "+00:00")
+        tz = ZoneInfo(tz_name)
+        try:
+            dt = datetime.datetime.fromisoformat(cleaned)
+        except Exception as e:
+            raise ValueError(f"Invalid datetime format: '{dt_str}'. Use YYYY-MM-DDTHH:MM:SS[Z|±HH:MM]") from e
+        if dt.tzinfo is None:
+            # Treat as local time in requested timezone
+            return dt.replace(tzinfo=tz)
+        # Convert to requested timezone for consistency
+        return dt.astimezone(tz)
+
+    @staticmethod
+    def _normalize_attendees(attendees: Optional[List[str]]) -> Tuple[List[Dict[str, str]], List[str]]:
+        """Normalize attendee emails.
+
+        - Adds default domain if missing (env GCAL_DEFAULT_EMAIL_DOMAIN or gmail.com).
+        - Filters out obviously invalid values.
+        Returns (normalized_list, rejected_inputs).
+        """
+        if not attendees:
+            return [], []
+        default_domain = os.getenv("GCAL_DEFAULT_EMAIL_DOMAIN") or os.getenv("DEFAULT_EMAIL_DOMAIN") or "gmail.com"
+        normalized: List[Dict[str, str]] = []
+        rejected: List[str] = []
+        for raw in attendees:
+            if not raw:
+                continue
+            s = str(raw).strip()
+            if "@" not in s:
+                s = f"{s}@{default_domain}"
+            # Basic sanity check (avoid spaces and ensure domain contains a dot)
+            if " " in s or s.count("@") != 1 or "." not in s.split("@", 1)[1]:
+                rejected.append(raw)
+                continue
+            normalized.append({"email": s})
+        return normalized, rejected
+
+    @staticmethod
+    def _raise_for_status_with_detail(resp, context: str = "") -> None:
+        """Raise a detailed error including API response body when available."""
+        try:
+            resp.raise_for_status()
+        except Exception as e:
+            detail = ""
+            try:
+                j = resp.json()
+                # Common Google error envelope
+                if isinstance(j, dict):
+                    err = j.get("error")
+                    if isinstance(err, dict):
+                        detail = err.get("message") or str(err)
+                    else:
+                        detail = str(j)
+                else:
+                    detail = str(j)
+            except Exception:
+                # Fallback to raw text (trim to avoid noisy output)
+                try:
+                    detail = (resp.text or "").strip()
+                except Exception:
+                    detail = ""
+            msg = f"Calendar API {context} failed: {resp.status_code} {getattr(resp, 'reason', '')}. {detail}".strip()
+            raise RuntimeError(msg) from e
+
+    # -----------------------------
     # REST fallback helpers
     # -----------------------------
     @property
@@ -126,7 +205,7 @@ class GoogleCalendarTools:
             raise RuntimeError("Calendar client not initialized")
         calendar_id = params.pop('calendarId', 'primary')
         resp = self.session.get(f"{self._base_url}/calendars/{calendar_id}/events", params=params, timeout=20)
-        resp.raise_for_status()
+        self._raise_for_status_with_detail(resp, context="events.list")
         return resp.json()
 
     def events_get(self, calendarId: str, eventId: str) -> Dict[str, Any]:
@@ -135,7 +214,7 @@ class GoogleCalendarTools:
         if not self.session:
             raise RuntimeError("Calendar client not initialized")
         resp = self.session.get(f"{self._base_url}/calendars/{calendarId}/events/{eventId}", timeout=20)
-        resp.raise_for_status()
+        self._raise_for_status_with_detail(resp, context="events.get")
         return resp.json()
 
     def events_insert(self, calendarId: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -144,7 +223,7 @@ class GoogleCalendarTools:
         if not self.session:
             raise RuntimeError("Calendar client not initialized")
         resp = self.session.post(f"{self._base_url}/calendars/{calendarId}/events", json=body, timeout=20)
-        resp.raise_for_status()
+        self._raise_for_status_with_detail(resp, context="events.insert")
         return resp.json()
 
     def events_update(self, calendarId: str, eventId: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -153,7 +232,7 @@ class GoogleCalendarTools:
         if not self.session:
             raise RuntimeError("Calendar client not initialized")
         resp = self.session.put(f"{self._base_url}/calendars/{calendarId}/events/{eventId}", json=body, timeout=20)
-        resp.raise_for_status()
+        self._raise_for_status_with_detail(resp, context="events.update")
         return resp.json()
 
     def events_delete(self, calendarId: str, eventId: str) -> None:
@@ -165,7 +244,7 @@ class GoogleCalendarTools:
         resp = self.session.delete(f"{self._base_url}/calendars/{calendarId}/events/{eventId}", timeout=20)
         # Google returns 204 No Content on success
         if not (200 <= resp.status_code < 300):
-            resp.raise_for_status()
+            self._raise_for_status_with_detail(resp, context="events.delete")
 
     def freebusy_query(self, body: Dict[str, Any]) -> Dict[str, Any]:
         if self.service:
@@ -173,7 +252,7 @@ class GoogleCalendarTools:
         if not self.session:
             raise RuntimeError("Calendar client not initialized")
         resp = self.session.post(f"{self._base_url}/freeBusy", json=body, timeout=20)
-        resp.raise_for_status()
+        self._raise_for_status_with_detail(resp, context="freebusy.query")
         return resp.json()
 
     def calendar_list_list(self, **params) -> Dict[str, Any]:
@@ -182,7 +261,7 @@ class GoogleCalendarTools:
         if not self.session:
             raise RuntimeError("Calendar client not initialized")
         resp = self.session.get(f"{self._base_url}/users/me/calendarList", params=params, timeout=20)
-        resp.raise_for_status()
+        self._raise_for_status_with_detail(resp, context="calendarList.list")
         return resp.json()
     
     def _get_credentials(self) -> Credentials:
@@ -413,46 +492,74 @@ class CreateEventTool(BaseTool):
     ) -> str:
         """Create a new calendar event"""
         try:
-            # Parse times and add timezone
-            tz = ZoneInfo(self.calendar_tools.config.timezone)
-            start_dt = datetime.datetime.fromisoformat(start_time).replace(tzinfo=tz)
-            end_dt = datetime.datetime.fromisoformat(end_time).replace(tzinfo=tz)
-            
+            # Parse times with robust handling and timezone
+            tz_name = self.calendar_tools.config.timezone
+            start_dt = self.calendar_tools._parse_dt_local(start_time, tz_name)
+            end_dt = self.calendar_tools._parse_dt_local(end_time, tz_name)
+            if end_dt <= start_dt:
+                return "Error creating event: end_time must be after start_time"
+
             # Build event body
             event = {
                 'summary': summary,
                 'start': {
                     'dateTime': start_dt.isoformat(),
-                    'timeZone': self.calendar_tools.config.timezone,
+                    'timeZone': tz_name,
                 },
                 'end': {
                     'dateTime': end_dt.isoformat(),
-                    'timeZone': self.calendar_tools.config.timezone,
+                    'timeZone': tz_name,
                 }
             }
-            
+
             if description:
                 event['description'] = description
             if location:
                 event['location'] = location
+            normalized_attendees: List[Dict[str, str]] = []
+            rejected_attendees: List[str] = []
             if attendees:
-                event['attendees'] = [{'email': email} for email in attendees]
+                normalized_attendees, rejected_attendees = self.calendar_tools._normalize_attendees(attendees)
+                if normalized_attendees:
+                    event['attendees'] = normalized_attendees
             if reminder_minutes:
                 event['reminders'] = {
                     'useDefault': False,
                     'overrides': [
-                        {'method': 'popup', 'minutes': reminder_minutes},
+                        {'method': 'popup', 'minutes': int(reminder_minutes)},
                     ],
                 }
-            
-            # Create event
-            result = self.calendar_tools.events_insert(
-                calendarId='primary',
-                body=event,
-            )
-            
-            return f"Event created successfully: {result.get('htmlLink')}"
-            
+
+            # Attempt creation
+            try:
+                result = self.calendar_tools.events_insert(
+                    calendarId='primary',
+                    body=event,
+                )
+            except Exception as e_first:
+                # If attendees were present and may be invalid, retry once without them
+                if 'attendees' in event and event['attendees']:
+                    event.pop('attendees', None)
+                    try:
+                        result = self.calendar_tools.events_insert(
+                            calendarId='primary',
+                            body=event,
+                        )
+                        note = " (created without attendees due to invalid addresses)"
+                        if rejected_attendees:
+                            bad = ", ".join(map(str, rejected_attendees))
+                            note = f" (invalid attendee(s): {bad}; created without attendees)"
+                        return f"Event created successfully{note}: {result.get('htmlLink')}"
+                    except Exception as e_second:
+                        return f"Error creating event: {str(e_second)}"
+                return f"Error creating event: {str(e_first)}"
+
+            # Success on first try
+            extra = ""
+            if rejected_attendees:
+                extra = f" (ignored invalid attendee(s): {', '.join(map(str, rejected_attendees))})"
+            return f"Event created successfully{extra}: {result.get('htmlLink')}"
+
         except Exception as e:
             return f"Error creating event: {str(e)}"
 

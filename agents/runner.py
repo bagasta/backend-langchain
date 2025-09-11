@@ -9,6 +9,46 @@ from database.client import get_agent_owner_id
 from agents.rag import retrieve_topk, format_context
 from agents.memory import persist_conversation
 import json
+from langchain_openai import ChatOpenAI
+
+
+def _finalize_output(
+    api_key: str,
+    model_name: str,
+    user_message: str,
+    draft_text: str | None,
+    tool_summaries: list[str] | None,
+) -> str | None:
+    """Run a lightweight finalization pass to produce a polished user-facing reply.
+
+    Returns the finalized text, or None on failure.
+    """
+    try:
+        if not api_key:
+            return None
+        text = (draft_text or "").strip()
+        summaries = tool_summaries or []
+        # Build a concise prompt that asks for a single final message
+        sys = (
+            "You are a helpful assistant. Produce one final message for the user. "
+            "Integrate the draft answer and the tools' outcomes. Do not show raw JSON or a separate tool section. "
+            "Be concise and keep the user's language."
+        )
+        human = (
+            f"User asked: {user_message}\n\n"
+            f"Draft answer (may be empty): {text}\n\n"
+            f"Tool outcomes (summarized):\n" + ("\n".join(summaries) if summaries else "(none)")
+        )
+        # Use a fast model for the finalizer unless overridden
+        model = os.getenv("FINALIZER_MODEL", model_name or "gpt-4o-mini")
+        timeout = float(os.getenv("FINALIZER_TIMEOUT", "8"))
+        max_retries = int(os.getenv("FINALIZER_MAX_RETRIES", "0"))
+        llm = ChatOpenAI(model=model, api_key=api_key, temperature=0, timeout=timeout, max_retries=max_retries)
+        msg = llm.invoke([{"role": "system", "content": sys}, {"role": "user", "content": human}])
+        out = getattr(msg, "content", "")
+        return out.strip() or None
+    except Exception:
+        return None
 
 
 def run_custom_agent(
@@ -104,9 +144,106 @@ def run_custom_agent(
         # Convert unexpected agent errors into a user-visible message instead of HTTP 500s
         raise ValueError(f"Agent execution failed: {exc}") from exc
 
-    # Normalize various return types to a safe string
+    # Normalize various return types to a safe string (combine model output + tool summaries)
     if isinstance(result, dict):
-        result = result.get("output") or json.dumps(result, default=str)
+        output_text = result.get("output")
+        inter = result.get("intermediate_steps") or []
+        summaries = []
+        gmail_text = None
+        try:
+            for step in inter:
+                if not isinstance(step, (list, tuple)) or len(step) < 2:
+                    continue
+                action, obs = step[0], step[1]
+                tool_name = getattr(action, "tool", None) or "tool"
+                text_obs = None
+                if isinstance(obs, dict):
+                    msg = obs.get("message") or obs.get("detail") or obs.get("error") or obs.get("status")
+                    rid = obs.get("id") or obs.get("threadId") or obs.get("messageId")
+                    if msg:
+                        text_obs = f"{msg}{f' (id: {rid})' if rid else ''}"
+                elif isinstance(obs, str):
+                    t = obs.strip()
+                    if (t.startswith("{") and t.endswith("}")) or (t.startswith("[") and t.endswith("]")):
+                        try:
+                            o2 = json.loads(t)
+                            if isinstance(o2, dict):
+                                msg = o2.get("message") or o2.get("detail") or o2.get("error") or o2.get("status")
+                                rid = o2.get("id") or o2.get("threadId") or o2.get("messageId")
+                                if msg:
+                                    text_obs = f"{msg}{f' (id: {rid})' if rid else ''}"
+                                # Capture Gmail send details to craft a friendly final line
+                                if (tool_name in {"gmail_send_message", "gmail"}) and gmail_text is None:
+                                    details = o2.get("details") or {}
+                                    to = details.get("to") or o2.get("to")
+                                    subject = details.get("subject") or o2.get("subject")
+                                    mid = o2.get("id") or o2.get("message_id") or o2.get("threadId") or o2.get("messageId")
+                                    if to or subject or mid:
+                                        parts = []
+                                        if to:
+                                            parts.append(f"ke {to}")
+                                        if subject:
+                                            parts.append(f"dengan subjek '{subject}'")
+                                        sent_clause = " ".join(parts) if parts else ""
+                                        suffix = f" (id: {mid})" if mid else ""
+                                        gmail_text = "Saya sudah mengirim email" + (f" {sent_clause}" if sent_clause else "") + "." + suffix
+                        except Exception:
+                            pass
+                    if text_obs is None and t:
+                        text_obs = t[:300]
+                if text_obs:
+                    summaries.append(f"- {tool_name}: {text_obs}")
+        except Exception:
+            pass
+
+        # Prefer conversational model output; humanize JSON output if needed
+        final_text = None
+        if isinstance(output_text, str) and output_text.strip():
+            t = output_text.strip()
+            is_json_like = (t.startswith("{") and t.endswith("}")) or (t.startswith("[") and t.endswith("]"))
+            if not is_json_like:
+                final_text = t
+            else:
+                try:
+                    o = json.loads(t)
+                    if isinstance(o, dict):
+                        msg = o.get("message") or o.get("detail") or o.get("error")
+                        rid = o.get("id") or o.get("threadId") or o.get("messageId")
+                        if msg:
+                            final_text = f"{msg}{f' (id: {rid})' if rid else ''}"
+                except Exception:
+                    pass
+
+        # Prefer crafted Gmail sentence over raw tool message
+        if gmail_text:
+            final_text = gmail_text if not final_text else final_text
+
+        # Optional finalizer pass to guarantee a polished user-facing message
+        use_finalizer = os.getenv("FINALIZE_OUTPUT", "true").lower() == "true"
+        finalized = None
+        if use_finalizer:
+            try:
+                api_key = config.openai_api_key or os.getenv("OPENAI_API_KEY", "")
+                finalized = _finalize_output(api_key, config.model_name, message, final_text, summaries)
+            except Exception:
+                finalized = None
+
+        if finalized:
+            result = finalized
+        else:
+            show_tools = os.getenv("TOOL_RESULTS_IN_OUTPUT", "false").lower() == "true"
+            if final_text and summaries:
+                result = (
+                    final_text
+                    if not show_tools
+                    else final_text + "\n\nTool results:\n" + "\n".join(summaries)
+                )
+            elif final_text:
+                result = final_text
+            elif summaries:
+                result = ("\n".join(summaries)) if show_tools else (output_text or "")
+            else:
+                result = output_text or json.dumps(result, default=str)
     elif hasattr(result, "content"):
         try:
             result = result.content  # e.g., AIMessage
@@ -123,6 +260,21 @@ def run_custom_agent(
             "Agent execution stopped before producing a final answer. "
             "Consider increasing max_iterations or revising the prompt."
         )
+    # Humanize common tool JSON outputs (e.g., Gmail) into a friendly sentence
+    try:
+        if isinstance(result, str):
+            txt = result.strip()
+            if (txt.startswith("{") and txt.endswith("}")) or (txt.startswith("[") and txt.endswith("]")):
+                obj = json.loads(txt)
+                if isinstance(obj, dict):
+                    msg = obj.get("message") or obj.get("detail") or obj.get("error")
+                    status = obj.get("status") or ("ok" if obj.get("ok") is True else None)
+                    if msg and (status or (isinstance(msg, str) and ("success" in msg.lower() or "sent" in msg.lower()))):
+                        rid = obj.get("id") or obj.get("threadId") or obj.get("messageId")
+                        suffix = f" (id: {rid})" if rid else ""
+                        result = f"{msg}{suffix}"
+    except Exception:
+        pass
     # Best-effort: ensure conversation is persisted to per-agent memory table
     try:
         if os.getenv("MEMORY_FALLBACK_WRITE", "true").lower() == "true":

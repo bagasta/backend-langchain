@@ -127,6 +127,9 @@ def build_agent(config: AgentConfig):
         extra_guidance.append(
             "Do not say you cannot access email; instead, attempt to use the Gmail tools and return their results."
         )
+        extra_guidance.append(
+            "After using any tool, always provide a final response to the user in natural language summarizing what you did and the outcome. Do not return raw tool JSON as your final answer."
+        )
     if has_calendar:
         extra_guidance.append(
             "Use the `calendar` tool when the user asks about Google Calendar events."
@@ -203,6 +206,7 @@ def build_agent(config: AgentConfig):
             tools=tools,
             verbose=True,
             handle_parsing_errors=True,
+            return_intermediate_steps=True,
             max_iterations=config.max_iterations,
             max_execution_time=config.max_execution_time,
         )

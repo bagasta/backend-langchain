@@ -208,13 +208,19 @@ def get_agent_config(agent_id: str) -> AgentConfig:
         except Exception:
             tools_list = [t.strip() for t in str(raw_tools or "").split(",") if t.strip()]
 
+    # Memory defaults (DB schema may not store these fields)
+    mem_enabled_default = os.getenv("AGENT_MEMORY_ENABLED_DEFAULT", "true").lower() == "true"
+    mem_backend_default = os.getenv("AGENT_MEMORY_BACKEND_DEFAULT", "sql").lower()
+    if mem_backend_default not in {"sql", "in_memory", "file"}:
+        mem_backend_default = "sql"
+
     payload = {
         "model_name": data.get("nama_model"),
         "system_message": data.get("system_message"),
         "tools": tools_list,
-        # Preserve memory defaults even if DB no longer stores them
-        "memory_enabled": False,
-        "memory_backend": "in_memory",
+        # Default to SQL-backed memory so conversations persist
+        "memory_enabled": mem_enabled_default,
+        "memory_backend": mem_backend_default,
     }
     if data.get("agent_type") is not None:
         payload["agent_type"] = data["agent_type"]
@@ -279,12 +285,16 @@ def warm_cache_for_all() -> dict:
                 except Exception:
                     tools_list = [t.strip() for t in str(raw_tools or "").split(",") if t.strip()]
 
+            mem_enabled_default = os.getenv("AGENT_MEMORY_ENABLED_DEFAULT", "true").lower() == "true"
+            mem_backend_default = os.getenv("AGENT_MEMORY_BACKEND_DEFAULT", "sql").lower()
+            if mem_backend_default not in {"sql", "in_memory", "file"}:
+                mem_backend_default = "sql"
             payload = {
                 "model_name": row.get("nama_model"),
                 "system_message": row.get("system_message"),
                 "tools": tools_list,
-                "memory_enabled": False,
-                "memory_backend": "in_memory",
+                "memory_enabled": mem_enabled_default,
+                "memory_backend": mem_backend_default,
             }
             if row.get("agent_type") is not None:
                 payload["agent_type"] = row.get("agent_type")
@@ -312,15 +322,51 @@ def save_agent_google_token(agent_id: str, email: str, token: dict) -> None:
     )
 
 
+def get_agent_owner_id(agent_id: str) -> str | None:
+    """Return the numeric owner/user id for an agent when available.
+
+    Works with both the new schema (field `user_id`) and the legacy (`ownerId`).
+    Returns a string (BigInt or UUID), or None when not found.
+    """
+    try:
+        data = _run("get", {"agent_id": agent_id})
+        if not isinstance(data, dict):
+            return None
+        if data.get("user_id") is not None:
+            return str(data["user_id"])
+        if data.get("ownerId") is not None:
+            return str(data["ownerId"])
+        return None
+    except Exception:
+        return None
+
+
 def get_cached_agent_config(agent_id: str) -> AgentConfig | None:
     """Return config from in-memory or file cache only (no DB calls)."""
     cached = _AGENT_CACHE.get(agent_id)
     if cached:
-        return cached[0]
+        cfg = cached[0]
+        # Enforce default memory behavior when cache was created with older defaults
+        try:
+            if not cfg.memory_enabled:
+                mem_enabled_default = os.getenv("AGENT_MEMORY_ENABLED_DEFAULT", "true").lower() == "true"
+                if mem_enabled_default:
+                    cfg.memory_enabled = True
+                    cfg.memory_backend = os.getenv("AGENT_MEMORY_BACKEND_DEFAULT", "sql").lower()
+        except Exception:
+            pass
+        return cfg
     file_cfg = _read_cached_config(agent_id)
     if file_cfg is not None:
         try:
             _AGENT_CACHE[agent_id] = (file_cfg, time.time())
+        except Exception:
+            pass
+        try:
+            # Upgrade cached file configs to current memory defaults if disabled
+            if not file_cfg.memory_enabled and os.getenv("AGENT_MEMORY_ENABLED_DEFAULT", "true").lower() == "true":
+                file_cfg.memory_enabled = True
+                file_cfg.memory_backend = os.getenv("AGENT_MEMORY_BACKEND_DEFAULT", "sql").lower()
         except Exception:
             pass
         return file_cfg

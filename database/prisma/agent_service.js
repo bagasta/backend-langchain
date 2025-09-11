@@ -2,9 +2,145 @@ const { PrismaClient } = require('@prisma/client');
 const { randomUUID } = require('crypto');
 
 const prisma = new PrismaClient();
+let kprisma = null; // Lazy knowledge DB client
+let mprisma = null; // Lazy memory DB client
 
 function jsonBigInt(obj) {
   return JSON.stringify(obj, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
+}
+
+function _deriveKnowledgeUrl() {
+  const envUrl = process.env.KNOWLEDGE_DATABASE_URL;
+  if (envUrl && String(envUrl).trim()) return envUrl.trim();
+  // Fallback: replace DB name in DATABASE_URL with 'knowledge_clevio_pro'
+  try {
+    const base = process.env.DATABASE_URL;
+    if (!base) return null;
+    const u = new URL(base);
+    // Pathname begins with '/'
+    u.pathname = '/knowledge_clevio_pro';
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
+function _deriveMemoryUrl() {
+  const envUrl = process.env.MEMORY_DATABASE_URL;
+  if (envUrl && String(envUrl).trim()) return envUrl.trim();
+  // Fallback: replace DB name in DATABASE_URL with 'memory_agent'
+  try {
+    const base = process.env.DATABASE_URL;
+    if (!base) return null;
+    const u = new URL(base);
+    u.pathname = '/memory_agent';
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
+async function getKnowledgeClient() {
+  if (kprisma) return kprisma;
+  const url = _deriveKnowledgeUrl();
+  if (!url) throw new Error('Knowledge DB URL not configured');
+  // Override datasource URL at runtime
+  kprisma = new PrismaClient({ datasources: { db: { url } } });
+  return kprisma;
+}
+
+async function getMemoryClient() {
+  if (mprisma) return mprisma;
+  const url = _deriveMemoryUrl();
+  if (!url) throw new Error('Memory DB URL not configured');
+  mprisma = new PrismaClient({ datasources: { db: { url } } });
+  return mprisma;
+}
+
+async function createKnowledgeTable(userId, agentId) {
+  try {
+    const uid = String(userId);
+    const aid = String(agentId);
+    // Keep digits only to form table suffix, per example tb_12
+    const uidDigits = uid.replace(/\D/g, '');
+    const aidDigits = aid.replace(/\D/g, '');
+    const tableName = `tb_${uidDigits}${aidDigits}`;
+    const kp = await getKnowledgeClient();
+    // Ensure extensions in the knowledge DB (best-effort)
+    try { await kp.$executeRaw`CREATE EXTENSION IF NOT EXISTS vector`; } catch {}
+    try { await kp.$executeRaw`CREATE EXTENSION IF NOT EXISTS pgcrypto`; } catch {}
+    try { await kp.$executeRaw`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`; } catch {}
+
+    // Create table in knowledge DB public schema.
+    // Use pgvector with explicit 3072 dimension to match text-embedding-3-large
+    try {
+      await kp.$executeRawUnsafe(
+        `CREATE TABLE IF NOT EXISTS public."${tableName}" (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          text text NOT NULL,
+          metadata jsonb,
+          embedding vector(3072)
+        )`
+      );
+      // Best-effort: add ANN index for faster similarity search
+      try {
+        await kp.$executeRawUnsafe(
+          `CREATE INDEX IF NOT EXISTS "${tableName}_embedding_idx" ON public."${tableName}" USING ivfflat (embedding vector_l2_ops)`
+        );
+      } catch {}
+    } catch (_e) {
+      await kp.$executeRawUnsafe(
+        `CREATE TABLE IF NOT EXISTS public."${tableName}" (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          text text NOT NULL,
+          metadata jsonb,
+          embedding vector(3072)
+        )`
+      );
+      try {
+        await kp.$executeRawUnsafe(
+          `CREATE INDEX IF NOT EXISTS "${tableName}_embedding_idx" ON public."${tableName}" USING ivfflat (embedding vector_l2_ops)`
+        );
+      } catch {}
+    }
+    return { ok: true, table: tableName };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
+async function createMemoryTable(userId, agentId) {
+  try {
+    const uid = String(userId);
+    const aid = String(agentId);
+    const uidDigits = uid.replace(/\D/g, '');
+    const aidDigits = aid.replace(/\D/g, '');
+    const tableName = `memory_${uidDigits}${aidDigits}`;
+    const mp = await getMemoryClient();
+    // Create simple chat history table per agent
+    await mp.$executeRawUnsafe(
+      `CREATE TABLE IF NOT EXISTS public."${tableName}" (
+        id serial PRIMARY KEY,
+        session_id character varying(255) NOT NULL,
+        message text NOT NULL
+      )`
+    );
+    // Helpful index on session_id
+    try {
+      await mp.$executeRawUnsafe(
+        `CREATE INDEX IF NOT EXISTS "${tableName}_session_idx" ON public."${tableName}" (session_id)`
+      );
+    } catch {}
+    // If table exists from previous versions with jsonb column, coerce to text to match LangChain
+    try {
+      await mp.$executeRawUnsafe(
+        `ALTER TABLE public."${tableName}" ALTER COLUMN message TYPE text USING message::text`
+      );
+    } catch {}
+    return { ok: true, table: tableName };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
 }
 
 async function readStdin() {
@@ -109,6 +245,8 @@ async function main() {
       const userId = ensuredUserId;
       const insertAgentRows = await prisma.$queryRaw`INSERT INTO "public"."agent" ("user_id", "nama_model", "system_message", "tools", "agent_type") VALUES (${userId}, ${payload.config?.model_name}, ${payload.config?.system_message}, ${toolsValue}, ${payload.config?.agent_type || 'chat-conversational-react-description'}) RETURNING "id","user_id","nama_model","system_message","tools","agent_type","created_at","updated_at";`;
       agent = insertAgentRows?.[0];
+      try { await createKnowledgeTable(userId, agent && agent.id); } catch {}
+      try { await createMemoryTable(userId, agent && agent.id); } catch {}
     } catch (rawErr) {
       try {
         // Fallback: legacy PascalCase tables via raw SQL
@@ -143,6 +281,13 @@ async function main() {
         ];
         const insertLegacy = await prisma.$queryRawUnsafe(sql, ...params);
         agent = insertLegacy?.[0] || { id: (insertLegacy && insertLegacy.id) };
+        // Attempt to create knowledge table if IDs are numeric
+        const uid = /^\d+$/.test(String(legacyUserId)) ? legacyUserId : null;
+        const aid = agent && agent.id && /^\d+$/.test(String(agent.id)) ? agent.id : null;
+        if (uid && aid) {
+          try { await createKnowledgeTable(uid, aid); } catch {}
+          try { await createMemoryTable(uid, aid); } catch {}
+        }
       } catch (legacyRawErr) {
         // No compatible DB schema detected. Surface a clear error.
         const hint =
@@ -154,20 +299,39 @@ async function main() {
     }
     console.log(jsonBigInt(agent));
   } else if (command === 'get') {
-    let agent;
+    let agent = null;
+    // 1) Try Prisma (new schema)
     try {
-      // Try BigInt id (new schema)
       const id = payload.agent_id ? BigInt(payload.agent_id) : undefined;
       agent = await prisma.agent.findUnique({ where: { id } });
-    } catch (e) {
+    } catch (_) {}
+    // 2) Raw SQL against new snake_case table
+    if (!agent) {
       try {
-        // Fallback: string id (legacy schema)
-        agent = await prisma.agent.findUnique({ where: { id: String(payload.agent_id) } });
-      } catch (_e) {
-        throw e;
-      }
+        const rows = await prisma.$queryRawUnsafe(
+          `SELECT id, user_id, nama_model, system_message, tools, agent_type
+           FROM "public"."agent"
+           WHERE id = CAST($1 AS bigint)
+           LIMIT 1`,
+          String(payload.agent_id)
+        );
+        if (rows && rows[0]) agent = rows[0];
+      } catch (_) {}
     }
-    console.log(jsonBigInt(agent));
+    // 3) Raw SQL legacy PascalCase table
+    if (!agent) {
+      try {
+        const rows = await prisma.$queryRawUnsafe(
+          `SELECT "id", "ownerId", "modelName", "systemMessage", "tools", "agentType"
+           FROM "public"."Agent"
+           WHERE "id" = $1
+           LIMIT 1`,
+          String(payload.agent_id)
+        );
+        if (rows && rows[0]) agent = rows[0];
+      } catch (_) {}
+    }
+    console.log(jsonBigInt(agent || {}));
   } else if (command === 'list') {
     const agents = await prisma.agent.findMany({});
     console.log(jsonBigInt(agents));
@@ -205,4 +369,6 @@ main()
   })
   .finally(async () => {
     await prisma.$disconnect();
+    try { if (kprisma) await kprisma.$disconnect(); } catch {}
+    try { if (mprisma) await mprisma.$disconnect(); } catch {}
   });

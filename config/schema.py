@@ -10,8 +10,11 @@ class AgentConfig(BaseModel):
     model_name: str
     system_message: str
     tools: List[str]
-    memory_enabled: Optional[bool] = False
-    memory_backend: Optional[MemoryBackend] = MemoryBackend.IN_MEMORY
+    # Enable memory by default and persist to SQL DB unless overridden
+    memory_enabled: Optional[bool] = True
+    memory_backend: Optional[MemoryBackend] = MemoryBackend.SQL
+    # Maximum number of past messages to load into context (None = all)
+    memory_max_messages: Optional[int] = None
     openai_api_key: Optional[str] = None
     max_iterations: Optional[int] = None
     max_execution_time: Optional[float] = None

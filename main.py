@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from router.agents import router as agents_router
+from database.memory_bootstrap import ensure_memory_database
 from router.oauth import router as oauth_router
 from router.gmail_status import router as gmail_status_router
 
@@ -34,6 +35,15 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["*"],
 )
+
+# Ensure memory DB exists on startup (best-effort)
+@app.on_event("startup")
+async def _bootstrap_memory_db():
+    try:
+        ensure_memory_database()
+    except Exception:
+        # Do not block startup if remote admin perms are missing
+        pass
 
 # mount router /agents
 app.include_router(agents_router, prefix="/agents", tags=["agents"])

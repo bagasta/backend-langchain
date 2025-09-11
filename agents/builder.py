@@ -179,7 +179,24 @@ def build_agent(config: AgentConfig):
     # 6. Optionally wrap with message history for memory
     if config.memory_enabled:
         backend = MemoryBackend(config.memory_backend)
-        history_loader = get_history_loader(backend)
+        # Lightweight observability for memory backend
+        try:
+            from urllib.parse import urlparse
+            if backend == MemoryBackend.SQL:
+                db_url = os.getenv("MEMORY_DATABASE_URL") or os.getenv("DATABASE_URL") or ""
+                host = db = ""
+                if db_url:
+                    p = urlparse(db_url)
+                    host = f"{p.hostname}:{p.port}" if p.hostname else ""
+                    db = (p.path or "/")[1:]
+                lim = config.memory_max_messages if config.memory_max_messages is not None else -1
+                print(f"[MEM] Using SQL memory backend (host={host} db={db} limit={lim})")
+            else:
+                lim = config.memory_max_messages if config.memory_max_messages is not None else -1
+                print(f"[MEM] Using memory backend: {backend.value} limit={lim}")
+        except Exception:
+            pass
+        history_loader = get_history_loader(backend, limit=config.memory_max_messages)
         executor = RunnableWithMessageHistory(
             executor,
             history_loader,

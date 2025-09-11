@@ -21,6 +21,11 @@ class RunAgentRequest(BaseModel):
     """Payload model for running an agent."""
     message: str
     openai_api_key: str | None = None
+    # Optional client-managed chat session id used for memory partitioning
+    sessionId: str | None = None
+    # Optional per-run memory toggle and context limit
+    memory_enable: bool | None = None
+    context_memory: int | str | None = None
     # Optional: bypass DB by providing config directly
     config: AgentConfig | None = None
 
@@ -90,7 +95,21 @@ async def run_agent(agent_id: str, payload: RunAgentRequest):
                 config = cfg
         if payload.openai_api_key:
             config.openai_api_key = payload.openai_api_key
-        result = run_custom_agent(agent_id, config, payload.message)
+        # Apply per-run memory overrides
+        try:
+            if payload.memory_enable is not None:
+                config.memory_enabled = bool(payload.memory_enable)
+        except Exception:
+            pass
+        try:
+            if payload.context_memory is not None:
+                cm = int(str(payload.context_memory).strip())
+                if cm < 0:
+                    cm = 0
+                config.memory_max_messages = cm
+        except Exception:
+            pass
+        result = run_custom_agent(agent_id, config, payload.message, session_id=payload.sessionId)
     except ValueError as exc:
         msg = str(exc)
         # If the agent failed during execution (e.g., tool/LLM error), return 200 with the error text

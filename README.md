@@ -143,15 +143,28 @@ curl -X POST http://localhost:8000/agents/{agent_id}/run \
 
 Both endpoints accept optional limits: set `max_iterations` or `max_execution_time` in the agent configuration to control how long an agent may run before aborting.
 
+### Retrieval‑Augmented Generation (RAG)
+
+- Default embedding model: `text-embedding-3-large` (3072 dims). Override with `EMBEDDING_MODEL`.
+- Knowledge DB: `KNOWLEDGE_DATABASE_URL` or derived from `DATABASE_URL` as `/knowledge_clevio_pro`.
+- Per‑agent knowledge tables: `public."tb_{userId}{agentId}"` with `embedding vector(3072)` and IVFFlat index.
+- Logs:
+  - `RAG_LOG_CONTEXT=true|false` shows snippet previews.
+  - `RAG_LOG_SYSTEM_MESSAGE=true|false` prints full system message with injected context.
+  - `RAG_SNIPPET_PREVIEW_CHARS=200` controls preview length.
+
 ### Conversation Memory
 
-When `memory_enabled` is `true`, each agent stores its conversation history using the selected backend:
+When `memory_enabled` is `true`, the agent tracks conversation state. Backends:
 
-- `sql` (default when `DATABASE_URL` is provided) persists history in the configured database.
-- `file` writes each conversation to `MEMORY_DIR` as JSON.
-- `in_memory` keeps history only for the current process.
+- `sql` (default): uses `MEMORY_DATABASE_URL` (fallback to `DATABASE_URL`).
+  - Per‑agent tables: `public."memory_{userId}{agentId}"` with schema `(id serial, session_id varchar(255), message text)`.
+  - Session routing: pass `sessionId` when running; a run uses token `"{userId}:{agentId}|{sessionId}"` internally so history loads from the correct table but stores `session_id` as the chat id (after the `|`).
+  - Fallback writer: set `MEMORY_FALLBACK_WRITE=false` to rely solely on LangChain’s writer (prevents duplicates). When `true` (default), the fallback inserts only if rows for the same content aren’t already present.
+- `file`: JSON files under `MEMORY_DIR`.
+- `in_memory`: process‑local only.
 
-History is keyed by the agent ID, so subsequent runs recall prior messages when using a persistent backend.
+Limit context size per run by setting `context_memory` in the run payload to load only the last N messages (keeps responses fast).
 
 ## Timeouts and Reliability
 - Database (Prisma) calls respect `PRISMA_CMD_TIMEOUT` (default 15s). Ensure `DATABASE_URL` points to a reachable Postgres server.
@@ -160,6 +173,22 @@ History is keyed by the agent ID, so subsequent runs recall prior messages when 
 - Gmail REST operations use `GMAIL_HTTP_TIMEOUT` (default 20s) to prevent long hangs.
 - Agent config caching: fetched configs are cached in-process for `AGENT_CACHE_TTL` seconds (default 300). If Prisma fails
   transiently on later requests, the cache avoids the DB round-trip so agents can keep responding.
+
+## Environment Variables (summary)
+- Required at runtime:
+  - `OPENAI_API_KEY` (or pass in run payload)
+- Databases:
+  - `DATABASE_URL` — main app DB (Prisma)
+  - `KNOWLEDGE_DATABASE_URL` — knowledge/RAG DB (optional; defaults to `/knowledge_clevio_pro`)
+  - `MEMORY_DATABASE_URL` — memory DB (recommended; e.g., `/memory_agent`)
+- RAG:
+  - `EMBEDDING_MODEL` (default `text-embedding-3-large`)
+  - `RAG_LOG_CONTEXT`, `RAG_LOG_SYSTEM_MESSAGE`, `RAG_SNIPPET_PREVIEW_CHARS`
+- Memory:
+  - `MEMORY_FALLBACK_WRITE` (`true`|`false`) — enable/disable fallback writer
+  - `MEMORY_DIR` — for file backend
+- OpenAI client:
+  - `OPENAI_TIMEOUT` (default 30), `OPENAI_MAX_RETRIES` (default 1)
 
 ## Extending
 - **Tools**: add a module under `agents/tools/` and register it in `agents/tools/registry.py`.

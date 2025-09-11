@@ -34,31 +34,31 @@ Example:
 ```
 POST /agents/
 {
-  "owner_id": "user1",
-  "name": "demo",
-  "config": {
-    "model_name": "gpt-4o-mini",
-    "system_message": "You are helpful",
-    "tools": ["calc", "gmail"],
-    "memory_enabled": false
-  }
+"owner_id": "3",
+"name": "demo9",
+"config": {
+"model_name": "gpt-4o-mini",
+"system_message": "You are helpful",
+"tools": ["calc"],
+"memory_enabled": false
+}
 }
 ```
 
 Curl:
 ```
-curl -X POST http://localhost:8000/agents/ \
-  -H 'Content-Type: application/json' \
-  -d '{
-        "owner_id": "user1",
-        "name": "demo",
-        "config": {
-          "model_name": "gpt-4o-mini",
-          "system_message": "You are helpful",
-          "tools": ["calc", "gmail"],
-          "memory_enabled": false
-        }
-      }'
+curl --location 'http://localhost:8000/agents/' \
+--header 'Content-Type: application/json' \
+--data '{
+"owner_id": "3",
+"name": "demo9",
+"config": {
+"model_name": "gpt-4o-mini",
+"system_message": "You are helpful",
+"tools": ["calc"],
+"memory_enabled": false
+}
+}'
 ```
 
 ### Run Agent
@@ -68,6 +68,9 @@ curl -X POST http://localhost:8000/agents/ \
   - `message` (string) — required
   - `openai_api_key` (string) — optional; preferred way to supply per‑request key
   - `config` (AgentConfig) — optional; if provided, bypasses DB/cache and runs with this config directly
+  - `sessionId` (string) — optional; stable chat id for memory partitioning. Reuse this value to continue the same chat.
+  - `memory_enable` (boolean) — optional; per‑run override for memory (default uses agent config)
+  - `context_memory` (int|string) — optional; per‑run limit of past messages to load (latest N)
 - Response (200): `{ "response": string }` or an error string if execution failed (tool/LLM error)
 - Errors:
   - 400 for configuration issues (e.g., missing API key)
@@ -81,17 +84,23 @@ Example:
 POST /agents/{agent_id}/run
 {
   "message": "What is 2 + 2?",
-  "openai_api_key": "sk-..."
+  "openai_api_key": "sk-...",
+  "sessionId": "1",
+  "memory_enable": true,
+  "context_memory": 100
 }
 ```
 
 Curl:
 ```
-curl -X POST http://localhost:8000/agents/AGENT_ID/run \
-  -H 'Content-Type: application/json' \
-  -d '{
-        "message": "What is 2 + 2?",
-        "openai_api_key": "sk-..."
+curl --location 'http://localhost:8000/agents/{agentId}/run' \
+--header 'Content-Type: application/json' \
+--data '{
+        "message": "Siapa nama saya?",
+        "openai_api_key":"API KEY",
+        "sessionId":"1",
+        "memory_enable": false,
+        "context_memory": "10"
       }'
 ```
 
@@ -229,8 +238,9 @@ curl "http://localhost:8000/oauth/google/callback?code=AUTH_CODE&state=AGENT_ID&
 - `model_name`: string
 - `system_message`: string
 - `tools`: string[]
-- `memory_enabled`: boolean (default false)
-- `memory_backend`: `in_memory` | `sql` | `file` (default `in_memory`)
+- `memory_enabled`: boolean (default true)
+- `memory_backend`: `in_memory` | `sql` | `file` (default `sql`)
+- `memory_max_messages`: int (optional; default null → load all)
 - `agent_type`: string (default `chat-conversational-react-description`)
 - `max_iterations`: int (optional)
 - `max_execution_time`: float seconds (optional)
@@ -240,3 +250,13 @@ curl "http://localhost:8000/oauth/google/callback?code=AUTH_CODE&state=AGENT_ID&
 - OpenAI key: provide via `openai_api_key` on `/agents/{id}/run` or environment; it is not saved in the database.
 - Tool expansion: shorthand names (e.g., `gmail`, `google_calendar`, `maps`, `docs`) are expanded to concrete tools for capability coverage.
 - Caching: agent configs are cached in memory and under `database/cache/agents/{id}.json` for faster runs and DB resilience.
+
+## RAG Behavior
+- Default embedding model `text-embedding-3-large` (3072 dims). Fallback auto‑retry handles mixed 1536/3072 setups.
+- Knowledge tables live in `KNOWLEDGE_DATABASE_URL` (or derived) with `vector(3072)` embeddings.
+- Logs can be toggled via `RAG_LOG_CONTEXT`, `RAG_LOG_SYSTEM_MESSAGE`, `RAG_SNIPPET_PREVIEW_CHARS`.
+
+## Memory Behavior
+- SQL backend stores messages in `public."memory_{userId}{agentId}"` with columns `(id serial, session_id varchar(255), message text)`.
+- Session routing: pass `sessionId` in `/run`; the server routes to `"{userId}:{agentId}|{sessionId}"` and stores `session_id = sessionId`.
+- To avoid duplicates entirely, set `MEMORY_FALLBACK_WRITE=false` (disables fallback writer). When enabled (default), fallback inserts only if rows do not already exist for the same content.

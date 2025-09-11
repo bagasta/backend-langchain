@@ -174,6 +174,17 @@ Limit context size per run by setting `context_memory` in the run payload to loa
 - Agent config caching: fetched configs are cached in-process for `AGENT_CACHE_TTL` seconds (default 300). If Prisma fails
   transiently on later requests, the cache avoids the DB round-trip so agents can keep responding.
 
+## Performance Tips (sub-7s runs)
+- Bypass DB on runs: keep `RUN_BYPASS_DB=true` and warm the cache via `/agents/{id}/warm`.
+- Owner id caching: the server now caches `owner_id` per agent to avoid Node/Prisma calls on every run.
+- RAG fast-fail and toggle:
+  - Set `RAG_ENABLED=false` to skip retrieval entirely when you don’t need it.
+  - Tune `RAG_STATEMENT_TIMEOUT_MS` (default `2000`) to abort slow vector DB queries.
+  - `OPENAI_EMBEDDING_TIMEOUT` and `OPENAI_EMBEDDING_MAX_RETRIES` default to `10` and `1` respectively.
+- LLM timeout/retries: set `OPENAI_TIMEOUT` (e.g., `12`) and `OPENAI_MAX_RETRIES=0..1` for faster failure.
+- Memory context size: pass `context_memory` in `/run` to limit past messages read (e.g., `50` loads the last 50 messages).
+- Fallback writer: set `MEMORY_FALLBACK_WRITE=false` to avoid an extra DB write per turn (LangChain will still persist).
+
 ## Environment Variables (summary)
 - Required at runtime:
   - `OPENAI_API_KEY` (or pass in run payload)

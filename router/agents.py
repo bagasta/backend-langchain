@@ -26,8 +26,12 @@ class RunAgentRequest(BaseModel):
     # Optional per-run memory toggle and context limit
     memory_enable: bool | None = None
     context_memory: int | str | None = None
+    # Optional per-run RAG toggle
+    rag_enable: bool | None = None
     # Optional: bypass DB by providing config directly
     config: AgentConfig | None = None
+    # Optional: pass owner_id directly to avoid lookup
+    owner_id: str | None = None
 
 
 class CreateAgentRequest(BaseModel):
@@ -109,7 +113,14 @@ async def run_agent(agent_id: str, payload: RunAgentRequest):
                 config.memory_max_messages = cm
         except Exception:
             pass
-        result = run_custom_agent(agent_id, config, payload.message, session_id=payload.sessionId)
+        result = run_custom_agent(
+            agent_id,
+            config,
+            payload.message,
+            session_id=payload.sessionId,
+            owner_id=payload.owner_id,
+            rag_enable=payload.rag_enable,
+        )
     except ValueError as exc:
         msg = str(exc)
         # If the agent failed during execution (e.g., tool/LLM error), return 200 with the error text

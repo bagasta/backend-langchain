@@ -63,6 +63,9 @@ def _connect_knowledge() -> Optional[Any]:
         logger.warning("[RAG] connection to knowledge DB failed; skipping RAG")
         return None
 
+# Track which tables we've optimized (index/ANALYZE) to avoid repeated DDL
+_OPTIMIZED_TABLES: set[str] = set()
+
 
 def _embed_query(text: str, api_key: Optional[str] = None, model: Optional[str] = None) -> Optional[List[float]]:
     if not text:
@@ -76,7 +79,16 @@ def _embed_query(text: str, api_key: Optional[str] = None, model: Optional[str] 
         return None
     # Default to OpenAI text-embedding-3-large (3072 dims) unless overridden
     model_name = model or os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
-    emb = OpenAIEmbeddings(model=model_name, api_key=key)
+    # Apply shorter timeout and fewer retries for snappy RAG
+    try:
+        timeout = float(os.getenv("OPENAI_EMBEDDING_TIMEOUT", "10"))
+    except Exception:
+        timeout = 10.0
+    try:
+        retries = int(os.getenv("OPENAI_EMBEDDING_MAX_RETRIES", "1"))
+    except Exception:
+        retries = 1
+    emb = OpenAIEmbeddings(model=model_name, api_key=key, timeout=timeout, max_retries=retries)
     try:
         v = emb.embed_query(text)
         logger.info(f"[RAG] embedded query with model={model_name}, dim={len(v)}")
@@ -96,13 +108,16 @@ def retrieve_topk(
     user_id: str,
     agent_id: str,
     query: str,
-    top_k: int = 5,
+    top_k: int = 3,
     api_key: Optional[str] = None,
 ) -> List[dict]:
     """Return top-k rows from the agent's knowledge table ordered by vector similarity.
 
     Each row dict contains: id (uuid), text (str), metadata (dict|None), score (float distance)
     """
+    if os.getenv("RAG_ENABLED", "true").lower() != "true":
+        logger.info("[RAG] disabled via RAG_ENABLED; skipping")
+        return []
     logger.info(f"[RAG] start retrieval user_id={user_id} agent_id={agent_id} top_k={top_k}")
     # Prefer large embeddings by default for compatibility with 3072-dim pgvector columns
     primary_model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
@@ -117,6 +132,19 @@ def retrieve_topk(
     try:
         tbl = _table_name(user_id, agent_id)
         logger.info(f"[RAG] querying table=public.\"{tbl}\"")
+        # One-time best-effort index/ANALYZE to keep ANN fast on existing tables
+        try:
+            if os.getenv("RAG_ENSURE_INDEX", "true").lower() == "true" and tbl not in _OPTIMIZED_TABLES:
+                with conn.cursor() as _cur:
+                    ops = os.getenv("RAG_INDEX_OPS", "vector_l2_ops")
+                    _cur.execute(
+                        f"CREATE INDEX IF NOT EXISTS \"{tbl}_embedding_idx\" ON public.\"{tbl}\" USING ivfflat (embedding {ops})"
+                    )
+                    if os.getenv("RAG_ANALYZE", "true").lower() == "true":
+                        _cur.execute(f"ANALYZE public.\"{tbl}\"")
+                _OPTIMIZED_TABLES.add(tbl)
+        except Exception as _e:  # pragma: no cover - permissions or races
+            pass
         # Build vector string literal and bind as a parameter so psycopg2 quotes it
         vec_str = "[" + ",".join(f"{x:.8f}" for x in vec) + "]"
         sql = f"""
@@ -126,6 +154,23 @@ def retrieve_topk(
             LIMIT %s
         """
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Statement timeout to fail fast on slow remote queries
+            try:
+                ms = int(os.getenv("RAG_STATEMENT_TIMEOUT_MS", "2000"))
+                cur.execute(f"SET statement_timeout TO {ms}")
+            except Exception:
+                pass
+            # Ensure ANN index is used aggressively
+            try:
+                if os.getenv("RAG_DISABLE_SEQSCAN", "true").lower() == "true":
+                    cur.execute("SET enable_seqscan TO off")
+            except Exception:
+                pass
+            try:
+                probes = int(os.getenv("RAG_IVFFLAT_PROBES", "1"))
+                cur.execute(f"SET ivfflat.probes = {probes}")
+            except Exception:
+                pass
             cur.execute(sql, (vec_str, vec_str, max(1, int(top_k))))
             rows = cur.fetchall() or []
         logger.info(f"[RAG] retrieved {len(rows)} rows from {tbl}")
@@ -164,6 +209,21 @@ def retrieve_topk(
                     LIMIT %s
                 """
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    try:
+                        ms = int(os.getenv("RAG_STATEMENT_TIMEOUT_MS", "2000"))
+                        cur.execute(f"SET statement_timeout TO {ms}")
+                    except Exception:
+                        pass
+                    try:
+                        if os.getenv("RAG_DISABLE_SEQSCAN", "true").lower() == "true":
+                            cur.execute("SET enable_seqscan TO off")
+                    except Exception:
+                        pass
+                    try:
+                        probes = int(os.getenv("RAG_IVFFLAT_PROBES", "1"))
+                        cur.execute(f"SET ivfflat.probes = {probes}")
+                    except Exception:
+                        pass
                     cur.execute(sql, (vec_str, vec_str, max(1, int(top_k))))
                     rows = cur.fetchall() or []
                 logger.info(f"[RAG] retrieved {len(rows)} rows from {tbl} after retry")

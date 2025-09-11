@@ -11,7 +11,14 @@ from agents.memory import persist_conversation
 import json
 
 
-def run_custom_agent(agent_id: str, config: AgentConfig, message: str, session_id: str | None = None) -> str:
+def run_custom_agent(
+    agent_id: str,
+    config: AgentConfig,
+    message: str,
+    session_id: str | None = None,
+    owner_id: str | None = None,
+    rag_enable: bool | None = None,
+) -> str:
     """Build agent from config and execute it on the provided message."""
     # 0. Best-effort: retrieve RAG context and augment prompt
     try:
@@ -23,11 +30,14 @@ def run_custom_agent(agent_id: str, config: AgentConfig, message: str, session_i
     chat_sid = (session_id or "").strip() or uuid4().hex
     session_id_for_memory = f"{table_key}|{chat_sid}"
     try:
-        user_id = get_agent_owner_id(agent_id)
+        user_id = owner_id or get_agent_owner_id(agent_id)
         if user_id:
             table_key = f"{user_id}:{agent_id}"
             session_id_for_memory = f"{table_key}|{chat_sid}"
-            snippets = retrieve_topk(user_id, agent_id, message, top_k=top_k, api_key=config.openai_api_key)
+            use_rag = os.getenv("RAG_ENABLED", "true").lower() == "true"
+            if rag_enable is not None:
+                use_rag = bool(rag_enable)
+            snippets = retrieve_topk(user_id, agent_id, message, top_k=top_k, api_key=config.openai_api_key) if use_rag else []
             if snippets:
                 ctx = format_context(snippets)
                 # Build neat, readable log with scores and snippet previews

@@ -11,7 +11,11 @@ function jsonBigInt(obj) {
 
 function _deriveKnowledgeUrl() {
   const envUrl = process.env.KNOWLEDGE_DATABASE_URL;
-  if (envUrl && String(envUrl).trim()) return envUrl.trim();
+  if (envUrl && String(envUrl).trim()) {
+    const s = String(envUrl).trim();
+    // Ensure a short connect_timeout so failing hosts don't hang
+    return s.includes('connect_timeout=') ? s : (s + (s.includes('?') ? '&' : '?') + 'connect_timeout=3');
+  }
   // Fallback: replace DB name in DATABASE_URL with 'knowledge_clevio_pro'
   try {
     const base = process.env.DATABASE_URL;
@@ -19,7 +23,9 @@ function _deriveKnowledgeUrl() {
     const u = new URL(base);
     // Pathname begins with '/'
     u.pathname = '/knowledge_clevio_pro';
-    return u.toString();
+    let out = u.toString();
+    out += out.includes('?') ? '&connect_timeout=3' : '?connect_timeout=3';
+    return out;
   } catch {
     return null;
   }
@@ -27,14 +33,19 @@ function _deriveKnowledgeUrl() {
 
 function _deriveMemoryUrl() {
   const envUrl = process.env.MEMORY_DATABASE_URL;
-  if (envUrl && String(envUrl).trim()) return envUrl.trim();
+  if (envUrl && String(envUrl).trim()) {
+    const s = String(envUrl).trim();
+    return s.includes('connect_timeout=') ? s : (s + (s.includes('?') ? '&' : '?') + 'connect_timeout=3');
+  }
   // Fallback: replace DB name in DATABASE_URL with 'memory_agent'
   try {
     const base = process.env.DATABASE_URL;
     if (!base) return null;
     const u = new URL(base);
     u.pathname = '/memory_agent';
-    return u.toString();
+    let out = u.toString();
+    out += out.includes('?') ? '&connect_timeout=3' : '?connect_timeout=3';
+    return out;
   } catch {
     return null;
   }
@@ -216,6 +227,14 @@ async function ensureUserAndGetId(ownerKey, email) {
 async function main() {
   const command = process.argv[2];
   const payload = await readStdin();
+  // Bound best-effort background tasks to prevent long hangs on slow/remote DBs
+  const TABLE_TASK_TIMEOUT_MS = parseInt(process.env.TABLE_TASK_TIMEOUT_MS || '2000', 10);
+  const withTimeout = async (promise) => {
+    return Promise.race([
+      promise,
+      new Promise((resolve) => setTimeout(() => resolve({ ok: false, reason: 'timeout' }), TABLE_TASK_TIMEOUT_MS)),
+    ]).catch(() => ({ ok: false }));
+  };
 
   if (command === 'create') {
     // Ensure a user exists; derive by email from provided ownerKey
@@ -245,8 +264,12 @@ async function main() {
       const userId = ensuredUserId;
       const insertAgentRows = await prisma.$queryRaw`INSERT INTO "public"."agent" ("user_id", "nama_model", "system_message", "tools", "agent_type") VALUES (${userId}, ${payload.config?.model_name}, ${payload.config?.system_message}, ${toolsValue}, ${payload.config?.agent_type || 'chat-conversational-react-description'}) RETURNING "id","user_id","nama_model","system_message","tools","agent_type","created_at","updated_at";`;
       agent = insertAgentRows?.[0];
-      try { await createKnowledgeTable(userId, agent && agent.id); } catch {}
-      try { await createMemoryTable(userId, agent && agent.id); } catch {}
+      // Best-effort table creation with short timeouts (can be disabled via env)
+      const ENABLE_CREATE = String(process.env.CREATE_TABLES_ON_AGENT_CREATE || 'true').toLowerCase() !== 'false';
+      if (ENABLE_CREATE) {
+        try { await withTimeout(createKnowledgeTable(userId, agent && agent.id)); } catch {}
+        try { await withTimeout(createMemoryTable(userId, agent && agent.id)); } catch {}
+      }
     } catch (rawErr) {
       try {
         // Fallback: legacy PascalCase tables via raw SQL
@@ -285,8 +308,11 @@ async function main() {
         const uid = /^\d+$/.test(String(legacyUserId)) ? legacyUserId : null;
         const aid = agent && agent.id && /^\d+$/.test(String(agent.id)) ? agent.id : null;
         if (uid && aid) {
-          try { await createKnowledgeTable(uid, aid); } catch {}
-          try { await createMemoryTable(uid, aid); } catch {}
+          const ENABLE_CREATE = String(process.env.CREATE_TABLES_ON_AGENT_CREATE || 'true').toLowerCase() !== 'false';
+          if (ENABLE_CREATE) {
+            try { await withTimeout(createKnowledgeTable(uid, aid)); } catch {}
+            try { await withTimeout(createMemoryTable(uid, aid)); } catch {}
+          }
         }
       } catch (legacyRawErr) {
         // No compatible DB schema detected. Surface a clear error.

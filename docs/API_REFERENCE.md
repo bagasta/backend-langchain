@@ -71,6 +71,8 @@ curl --location 'http://localhost:8000/agents/' \
   - `sessionId` (string) — optional; stable chat id for memory partitioning. Reuse this value to continue the same chat.
   - `memory_enable` (boolean) — optional; per‑run override for memory (default uses agent config)
   - `context_memory` (int|string) — optional; per‑run limit of past messages to load (latest N)
+  - `rag_enable` (boolean) — optional; per‑run RAG toggle (default uses `RAG_ENABLED` env)
+  - `owner_id` (string) — optional; pass if you already know the owner/user id to avoid a lookup
 - Response (200): `{ "response": string }` or an error string if execution failed (tool/LLM error)
 - Errors:
   - 400 for configuration issues (e.g., missing API key)

@@ -13,6 +13,7 @@ except Exception:  # pragma: no cover - optional in some deployments
 PRISMA_DIR = Path(__file__).resolve().parent / "prisma"
 SCRIPT = PRISMA_DIR / "agent_service.js"
 CACHE_DIR = Path(__file__).resolve().parent / "cache" / "agents"
+OWNERS_DIR = Path(__file__).resolve().parent / "cache" / "owners"
 
 # Optional: keep old behavior (migrate/generate) but only once per process
 _AUTO_SYNC = os.getenv("PRISMA_AUTO_SYNC", "true").lower() == "true"
@@ -20,6 +21,7 @@ _SYNC_DONE = False
 _CMD_TIMEOUT = float(os.getenv("PRISMA_CMD_TIMEOUT", "4"))  # seconds (short to fail fast)
 _CACHE_TTL = float(os.getenv("AGENT_CACHE_TTL", "300"))  # seconds, 5 minutes default
 _AGENT_CACHE: dict[str, tuple[AgentConfig, float]] = {}
+_OWNER_CACHE: dict[str, str] = {}
 
 
 def _with_connect_timeout(url: str, default_seconds: int = 3) -> str:
@@ -66,12 +68,23 @@ def _precheck_db():
 def _cache_path(agent_id: str) -> Path:
     return CACHE_DIR / f"{agent_id}.json"
 
+def _owner_path(agent_id: str) -> Path:
+    return OWNERS_DIR / f"{agent_id}.owner.json"
+
 
 def _write_cached_config(agent_id: str, config: AgentConfig) -> None:
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         with open(_cache_path(agent_id), "w", encoding="utf-8") as f:
             json.dump(config.model_dump(), f, ensure_ascii=False)
+    except Exception:
+        pass
+
+def _write_cached_owner(agent_id: str, owner_id: str) -> None:
+    try:
+        OWNERS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(_owner_path(agent_id), "w", encoding="utf-8") as f:
+            json.dump({"owner_id": owner_id}, f)
     except Exception:
         pass
 
@@ -84,6 +97,18 @@ def _read_cached_config(agent_id: str) -> AgentConfig | None:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return AgentConfig(**data)
+    except Exception:
+        return None
+
+def _read_cached_owner(agent_id: str) -> str | None:
+    try:
+        p = _owner_path(agent_id)
+        if not p.exists():
+            return None
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        oid = data.get("owner_id")
+        return str(oid) if oid is not None else None
     except Exception:
         return None
 
@@ -328,17 +353,31 @@ def get_agent_owner_id(agent_id: str) -> str | None:
     Works with both the new schema (field `user_id`) and the legacy (`ownerId`).
     Returns a string (BigInt or UUID), or None when not found.
     """
+    # Fast path: in-memory cache
+    oid = _OWNER_CACHE.get(agent_id)
+    if oid:
+        return oid
+    # File cache
+    oid_file = _read_cached_owner(agent_id)
+    if oid_file:
+        _OWNER_CACHE[agent_id] = oid_file
+        return oid_file
+    # Slow path: call Node process once, then cache
     try:
         data = _run("get", {"agent_id": agent_id})
-        if not isinstance(data, dict):
-            return None
-        if data.get("user_id") is not None:
-            return str(data["user_id"])
-        if data.get("ownerId") is not None:
-            return str(data["ownerId"])
-        return None
+        if isinstance(data, dict):
+            oid = None
+            if data.get("user_id") is not None:
+                oid = str(data["user_id"])
+            elif data.get("ownerId") is not None:
+                oid = str(data["ownerId"])
+            if oid:
+                _OWNER_CACHE[agent_id] = oid
+                _write_cached_owner(agent_id, oid)
+                return oid
     except Exception:
-        return None
+        pass
+    return None
 
 
 def get_cached_agent_config(agent_id: str) -> AgentConfig | None:

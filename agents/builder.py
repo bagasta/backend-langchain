@@ -11,6 +11,28 @@ from pydantic import ValidationError
 from config.schema import AgentConfig
 from agents.tools.registry import get_tools_by_names
 from agents.memory import MemoryBackend, get_history_loader
+import hashlib
+import time
+
+# Simple in-process cache for built executors to avoid per-run rebuild cost
+_EXECUTOR_CACHE = {}
+_EXECUTOR_CACHE_MAX = int(os.getenv("AGENT_EXECUTOR_CACHE_MAX", "24"))
+
+def _cache_key(cfg: AgentConfig, api_key: str) -> str:
+    parts = [
+        cfg.model_name or "",
+        cfg.system_message or "",
+        ",".join(sorted(cfg.tools or [])),
+        str(bool(cfg.memory_enabled)),
+        (cfg.memory_backend.value if isinstance(cfg.memory_backend, MemoryBackend) else str(cfg.memory_backend)),
+        str(cfg.memory_max_messages or ""),
+        (cfg.agent_type.value if hasattr(cfg.agent_type, "value") else str(cfg.agent_type)),
+        str(cfg.max_iterations or ""),
+        str(cfg.max_execution_time or ""),
+    ]
+    key_suffix = hashlib.sha1((api_key or "").encode("utf-8")).hexdigest()[:8]
+    raw = "|".join(parts) + "|" + key_suffix
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 load_dotenv()
 
@@ -27,8 +49,8 @@ def build_agent(config: AgentConfig):
     try:
         # langchain_openai.ChatOpenAI expects `model` and `api_key`
         # Apply a reasonable HTTP timeout and fewer retries to avoid long hangs
-        timeout = float(os.getenv("OPENAI_TIMEOUT", "30"))
-        max_retries = int(os.getenv("OPENAI_MAX_RETRIES", "1"))
+        timeout = float(os.getenv("OPENAI_TIMEOUT", "12"))
+        max_retries = int(os.getenv("OPENAI_MAX_RETRIES", "0"))
         llm = ChatOpenAI(
             model=config.model_name,
             temperature=0,
@@ -165,16 +187,30 @@ def build_agent(config: AgentConfig):
         ]
     )
 
-    agent = create_tool_calling_agent(llm, tools, prompt)
-
-    executor = AgentExecutor(
-        agent=agent,
-        tools=tools,
-        verbose=True,
-        handle_parsing_errors=True,
-        max_iterations=config.max_iterations,
-        max_execution_time=config.max_execution_time,
-    )
+    # Reuse cached executor when enabled and available
+    cache_enabled = os.getenv("AGENT_EXECUTOR_CACHE_ENABLED", "true").lower() == "true"
+    key = _cache_key(config, api_key)
+    executor = None
+    if cache_enabled:
+        cached = _EXECUTOR_CACHE.get(key)
+        if cached:
+            _EXECUTOR_CACHE[key] = (time.time(), cached[1])
+            executor = cached[1]
+    if executor is None:
+        agent = create_tool_calling_agent(llm, tools, prompt)
+        executor = AgentExecutor(
+            agent=agent,
+            tools=tools,
+            verbose=True,
+            handle_parsing_errors=True,
+            max_iterations=config.max_iterations,
+            max_execution_time=config.max_execution_time,
+        )
+        if cache_enabled:
+            _EXECUTOR_CACHE[key] = (time.time(), executor)
+            if len(_EXECUTOR_CACHE) > _EXECUTOR_CACHE_MAX:
+                oldest_key = sorted(_EXECUTOR_CACHE.items(), key=lambda kv: kv[1][0])[0][0]
+                _EXECUTOR_CACHE.pop(oldest_key, None)
 
     # 6. Optionally wrap with message history for memory
     if config.memory_enabled:

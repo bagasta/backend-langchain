@@ -65,7 +65,9 @@ TOOL_REGISTRY = {
     "maps_directions": next((t for t in maps_tools if getattr(t, "name", "") == "maps_directions"), None),
     "maps_distance_matrix": next((t for t in maps_tools if getattr(t, "name", "") == "maps_distance_matrix"), None),
     "maps_nearby": next((t for t in maps_tools if getattr(t, "name", "") == "maps_nearby"), None),
+    # Gmail (canonical umbrella name will be google_gmail; keep gmail as alias)
     "gmail": gmail_tool,
+    "google_gmail": gmail_tool,
     "gmail_search": gmail_search_tool,
     "gmail_send_message": gmail_send_message_tool,
     "gmail_read_messages": gmail_read_messages_tool,
@@ -79,7 +81,10 @@ TOOL_REGISTRY = {
     "send_email": gmail_send_message_tool,
     "email_send": gmail_send_message_tool,
     "calc": calc_tool,
+    # Web search + common aliases (normalized in expand function too)
     "websearch": websearch_tool,
+    "web_search": websearch_tool,
+    "web search": websearch_tool,
     "spreadsheet": spreadsheet_tool,
     # Google Docs tools (lazy-initialized)
     "google_docs": None,
@@ -104,6 +109,7 @@ TOOL_REGISTRY = {
 # Mapping of tools to optional OAuth login URL builders.
 AUTH_URL_BUILDERS = {
     "gmail": build_gmail_oauth_url,
+    "google_gmail": build_gmail_oauth_url,
     "gmail_search": build_gmail_oauth_url,
     "gmail_send_message": build_gmail_oauth_url,
     "gmail_read_messages": build_gmail_oauth_url,
@@ -142,10 +148,72 @@ def expand_tool_names(names: list[str]) -> list[str]:
     - Keep original non-Gmail tool names.
     - Keep the unified 'gmail' tool if present; it can be used directly.
     """
-    base = [n for n in names if n and isinstance(n, str)]
+    # Normalize and split inputs (accept comma/semicolon/pipe-delimited strings)
+    tokens: list[str] = []
+    for raw in (names or []):
+        if not raw or not isinstance(raw, str):
+            continue
+        parts = [raw]
+        if any(d in raw for d in [",", ";", "|"]):
+            tmp = []
+            for p in parts:
+                for d in [",", ";", "|"]:
+                    p = p.replace(d, ",")
+                tmp.extend([s for s in p.split(",") if s is not None])
+            parts = tmp
+        for p in parts:
+            s = (p or "").strip()
+            if not s:
+                continue
+            tokens.append(s)
+
+    # Canonicalize: lowercase, replace spaces/hyphens with underscores
+    canonical: list[str] = []
+    for t in tokens:
+        s = t.strip().lower()
+        for ch in [" ", "-", "—", "–"]:
+            s = s.replace(ch, "_")
+        while "__" in s:
+            s = s.replace("__", "_")
+        s = s.strip("_")
+        # Synonym mapping to canonical keys
+        synonyms = {
+            # Gmail
+            "gmail": "google_gmail",
+            "google_gmail": "google_gmail",
+            "g_mail": "google_gmail",
+            # Calendar
+            "calendar": "google_calendar",
+            "google_calendar": "google_calendar",
+            "google_cal": "google_calendar",
+            # Docs
+            "google_docs": "google_docs",
+            "docs": "google_docs",
+            "google_doc": "google_docs",
+            "google_documents": "google_docs",
+            # Maps
+            "google_maps": "google_maps",
+            "maps": "maps",
+            # Search
+            "web": "websearch",
+            "web_search": "websearch",
+            "websearch": "websearch",
+            "websearch_tool": "websearch",
+            "web-search": "websearch",
+            "google_search": "google_search",
+            "google": "google_search",
+            "search": "google_search",
+            # Serper
+            "serper": "google_serper",
+            "google_serper": "google_serper",
+        }
+        canonical.append(synonyms.get(s, s))
+
+    base = canonical
     lower = {n.lower() for n in base}
     gmail_triggers = {
         "gmail",
+        "google_gmail",
         "gmail_search",
         "gmail_send_message",
         "gmail_read_messages",
@@ -203,7 +271,16 @@ def expand_tool_names(names: list[str]) -> list[str]:
             # keep unified tool last for LLM choice
             "google_docs"
         ]
-    return expanded
+    # De-duplicate while preserving order
+    seen = set()
+    out: list[str] = []
+    for n in expanded:
+        nl = n.lower()
+        if nl in seen:
+            continue
+        seen.add(nl)
+        out.append(n)
+    return out
 
 
 def get_tools_by_names(names: list[str]):
@@ -446,7 +523,7 @@ def get_auth_urls(names: list[str], state: str | None = None) -> dict[str, str]:
     # Detect any Google providers among the requested tools
     lower = {n.lower() for n in final_names}
     google_related = any(
-        (n.startswith("gmail")) or (n in _CALENDAR_TOOL_NAMES) or (n in {"google_docs", "docs", "docs_create", "docs_get", "docs_append", "docs_export_pdf"})
+        (n.startswith("gmail")) or (n.startswith("google_gmail")) or (n in _CALENDAR_TOOL_NAMES) or (n in {"google_docs", "docs", "docs_create", "docs_get", "docs_append", "docs_export_pdf"})
         for n in lower
     )
 
@@ -458,7 +535,7 @@ def get_auth_urls(names: list[str], state: str | None = None) -> dict[str, str]:
     # Preserve other providers (non-Google) if any are added later
     for name in final_names:
         name_lower = name.lower()
-        if name_lower.startswith("gmail") or (name_lower in _CALENDAR_TOOL_NAMES) or (name_lower in {"google_docs", "docs", "docs_create", "docs_get", "docs_append", "docs_export_pdf"}):
+        if name_lower.startswith("gmail") or name_lower.startswith("google_gmail") or (name_lower in _CALENDAR_TOOL_NAMES) or (name_lower in {"google_docs", "docs", "docs_create", "docs_get", "docs_append", "docs_export_pdf"}):
             continue
         builder = AUTH_URL_BUILDERS.get(name) or AUTH_URL_BUILDERS.get(name_lower)
         if builder:

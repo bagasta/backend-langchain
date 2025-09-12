@@ -26,7 +26,8 @@ This backend exposes endpoints to create and run configurable agents, perform Gm
   - `agent_id` (string)
   - `auth_urls` (object) — optional; when any Google tools are present, includes a single unified `google` OAuth URL with the full scope set (Gmail + Calendar + Docs)
 - Notes:
-  - Gmail tool names (e.g., `gmail`, `gmail_read_messages`, `gmail_get_message`, `gmail_send_message`) are auto‑expanded so a single `gmail` entry enables all core actions.
+  - Tool naming: use canonical `google_*` names for Google providers, e.g. `google_gmail`, `google_calendar`, `google_docs`, `google_maps`. Legacy aliases like `gmail`, `calendar`, `docs`, `maps` are accepted and normalized.
+  - Gmail tool names (e.g., `google_gmail` or `gmail`) are auto‑expanded so a single umbrella entry enables read/get/send actions.
   - The server upserts the `User` row for `owner_id` if it does not exist.
   - The persisted agent config excludes `openai_api_key`.
 

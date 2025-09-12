@@ -1,0 +1,81 @@
+version: "3.9"
+
+services:
+  db:
+    image: ankane/pgvector:pg16
+    container_name: langchain_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-cleviopro}
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./docker/pg/initdb:/docker-entrypoint-initdb.d:ro
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: langchain_app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      # Python/LLM
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_TIMEOUT: ${OPENAI_TIMEOUT:-12}
+      OPENAI_MAX_RETRIES: ${OPENAI_MAX_RETRIES:-0}
+
+      # Databases (point to the local Postgres service)
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/cleviopro}
+      KNOWLEDGE_DATABASE_URL: ${KNOWLEDGE_DATABASE_URL:-postgresql://postgres:postgres@db:5432/knowledge_clevio_pro}
+      MEMORY_DATABASE_URL: ${MEMORY_DATABASE_URL:-postgresql://postgres:postgres@db:5432/memory_agent}
+
+      # Prisma/Node fast-fail for remote calls triggered by the API
+      PRISMA_CMD_TIMEOUT: ${PRISMA_CMD_TIMEOUT:-8}
+      CREATE_TABLES_ON_AGENT_CREATE: ${CREATE_TABLES_ON_AGENT_CREATE:-true}
+
+      # RAG + Memory defaults
+      RAG_ENABLED: ${RAG_ENABLED:-true}
+      RAG_TOP_K: ${RAG_TOP_K:-3}
+      RAG_STATEMENT_TIMEOUT_MS: ${RAG_STATEMENT_TIMEOUT_MS:-2000}
+      OPENAI_EMBEDDING_TIMEOUT: ${OPENAI_EMBEDDING_TIMEOUT:-10}
+      OPENAI_EMBEDDING_MAX_RETRIES: ${OPENAI_EMBEDDING_MAX_RETRIES:-1}
+      MEMORY_FALLBACK_WRITE: ${MEMORY_FALLBACK_WRITE:-false}
+      RUN_BYPASS_DB: ${RUN_BYPASS_DB:-true}
+
+      # Output shaping
+      TOOL_RESULTS_IN_OUTPUT: ${TOOL_RESULTS_IN_OUTPUT:-false}
+      FINALIZE_OUTPUT: ${FINALIZE_OUTPUT:-true}
+      FINALIZER_MODEL: ${FINALIZER_MODEL:-gpt-4o-mini}
+      FINALIZER_TIMEOUT: ${FINALIZER_TIMEOUT:-8}
+      FINALIZER_MAX_RETRIES: ${FINALIZER_MAX_RETRIES:-0}
+
+      # Google credentials (mounted volume)
+      GMAIL_CREDENTIALS_DIR: /app/credential_folder
+      GMAIL_TOKEN_PATH: /app/credential_folder/token.json
+      GCAL_CREDENTIALS_PATH: /app/credential_folder
+      GCAL_TOKEN_PATH: /app/credential_folder/calendar_token.json
+      GDOCS_TOKEN_PATH: /app/credential_folder/docs_token.json
+
+    volumes:
+      # Persist OAuth tokens and any generated credentials
+      - creds:/app/credential_folder
+
+volumes:
+  pg_data:
+  creds:
+

@@ -1,6 +1,6 @@
 # Endpoint for creating and running agents
 # router/agents.py
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 import os
 from pydantic import BaseModel
 from config.schema import AgentConfig
@@ -41,9 +41,21 @@ class CreateAgentRequest(BaseModel):
     config: AgentConfig
 
 
+from .security import require_api_key
+
+
 @router.post("/", summary="Create an agent")
-async def create_agent(payload: CreateAgentRequest):
+async def create_agent(payload: CreateAgentRequest, api=Depends(require_api_key)):
     try:
+        # Enforce owner binding to API key when available
+        try:
+            api_uid = str(api.get("user_id")) if isinstance(api, dict) and api.get("user_id") is not None else None
+            if api_uid is not None and str(payload.owner_id) != api_uid:
+                raise HTTPException(status_code=403, detail="API key is not authorized for this owner_id")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
         # Expand tool list to ensure full Gmail capabilities if any Gmail tool is requested
         try:
             expanded = expand_tool_names(payload.config.tools)
@@ -60,8 +72,22 @@ async def create_agent(payload: CreateAgentRequest):
     return response
 
 @router.post("/{agent_id}/run", summary="Run an agent by ID")
-async def run_agent(agent_id: str, payload: RunAgentRequest):
+async def run_agent(agent_id: str, payload: RunAgentRequest, api=Depends(require_api_key)):
     try:
+        # Authorization check: API key owner must match agent owner
+        try:
+            api_uid = str(api.get("user_id")) if isinstance(api, dict) and api.get("user_id") is not None else None
+            if api_uid is not None:
+                oid = get_agent_owner_id(agent_id)
+                if oid is not None and str(oid) != api_uid:
+                    raise HTTPException(status_code=403, detail="API key is not authorized for this agent")
+                # If payload.owner_id is provided, ensure consistency as well
+                if payload.owner_id is not None and str(payload.owner_id) != api_uid:
+                    raise HTTPException(status_code=403, detail="API key is not authorized for this owner_id")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
         # 1) If payload carries the config, use it and bypass storage
         if payload.config is not None:
             # Expand config.tools for convenience when clients pass a shorthand

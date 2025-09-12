@@ -1,5 +1,6 @@
 const { PrismaClient } = require('@prisma/client');
 const { randomUUID } = require('crypto');
+const crypto = require('crypto');
 
 const prisma = new PrismaClient();
 let kprisma = null; // Lazy knowledge DB client
@@ -361,6 +362,78 @@ async function main() {
   } else if (command === 'list') {
     const agents = await prisma.agent.findMany({});
     console.log(jsonBigInt(agents));
+  } else if (command === 'apikey_lookup') {
+    try {
+      const key = String(payload.key || '');
+      if (!key) {
+        console.log(jsonBigInt({ ok: false, reason: 'missing_key' }));
+        return;
+      }
+      const hash = crypto.createHash('sha256').update(key).digest('hex');
+      const rows = await prisma.$queryRaw`SELECT user_id, active, expires_at FROM "public"."api_key" WHERE key_hash = ${hash} LIMIT 1`;
+      const row = rows && rows[0];
+      if (!row) {
+        console.log(jsonBigInt({ ok: false, reason: 'not_found' }));
+        return;
+      }
+      const active = !!row.active;
+      const exp = row.expires_at ? new Date(row.expires_at) : null;
+      const now = new Date();
+      if (!active || (exp && now > exp)) {
+        console.log(jsonBigInt({ ok: false, reason: 'expired_or_inactive' }));
+        return;
+      }
+      // Update last_used_at best-effort
+      try {
+        await prisma.$queryRaw`UPDATE "public"."api_key" SET last_used_at = NOW() WHERE key_hash = ${hash}`;
+      } catch {}
+      console.log(jsonBigInt({ ok: true, user_id: row.user_id }));
+    } catch (e) {
+      console.log(jsonBigInt({ ok: false, reason: 'lookup_failed', error: String(e) }));
+    }
+  } else if (command === 'apikey_create') {
+    try {
+      const userId = payload.user_id;
+      if (!userId) {
+        console.log(jsonBigInt({ ok: false, reason: 'missing_user_id' }));
+        return;
+      }
+      let plaintext = String(payload.plaintext || '').trim();
+      if (!plaintext) {
+        plaintext = crypto.randomBytes(32).toString('hex');
+      }
+      const hash = crypto.createHash('sha256').update(plaintext).digest('hex');
+      const label = (payload.label != null) ? String(payload.label) : null;
+      let expiresAt = null;
+      if (payload.expires_at) {
+        try { expiresAt = new Date(String(payload.expires_at)); } catch {}
+      } else if (payload.ttl_days) {
+        const days = parseInt(String(payload.ttl_days), 10);
+        if (!isNaN(days) && days > 0) {
+          const d = new Date();
+          d.setUTCDate(d.getUTCDate() + days);
+          expiresAt = d;
+        }
+      }
+      const rows = await prisma.$queryRaw`INSERT INTO "public"."api_key" ("user_id", "key_hash", "label", "expires_at", "active") VALUES (${BigInt(userId)}, ${hash}, ${label}, ${expiresAt}, TRUE) RETURNING id, user_id, expires_at`;
+      const row = rows && rows[0];
+      console.log(jsonBigInt({ ok: true, id: row && row.id, user_id: row && row.user_id, expires_at: row && row.expires_at, plaintext }));
+    } catch (e) {
+      console.log(jsonBigInt({ ok: false, reason: 'create_failed', error: String(e) }));
+    }
+  } else if (command === 'ensure_user') {
+    try {
+      const email = String(payload.email || '').trim();
+      if (!email) {
+        console.log(jsonBigInt({ ok: false, reason: 'missing_email' }));
+        return;
+      }
+      const ownerKey = (payload.ownerKey != null) ? String(payload.ownerKey) : (email.split('@')[0] || 'user');
+      const id = await ensureUserAndGetId(ownerKey, email);
+      console.log(jsonBigInt({ ok: true, user_id: id }));
+    } catch (e) {
+      console.log(jsonBigInt({ ok: false, reason: 'ensure_user_failed', error: String(e) }));
+    }
   } else if (command === 'save_token') {
     // Upsert a token into list_account for the agent
     try {

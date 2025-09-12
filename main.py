@@ -12,6 +12,7 @@ from router.agents import router as agents_router
 from database.memory_bootstrap import ensure_memory_database
 from router.oauth import router as oauth_router
 from router.gmail_status import router as gmail_status_router
+from router.api_keys import router as api_keys_router
 
 app = FastAPI(title="LangChain Modular Backend")
 
@@ -49,6 +50,7 @@ async def _bootstrap_memory_db():
 app.include_router(agents_router, prefix="/agents", tags=["agents"])
 app.include_router(oauth_router, tags=["oauth"])  # includes /oauth/gmail/callback
 app.include_router(gmail_status_router, tags=["gmail"])  # /gmail/status, /gmail/dry_send
+app.include_router(api_keys_router, tags=["api_keys"])  # /api_keys/generate
 
 @app.get("/")
 async def root():

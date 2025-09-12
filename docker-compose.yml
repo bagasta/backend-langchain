@@ -63,6 +63,11 @@ services:
       FINALIZER_MODEL: ${FINALIZER_MODEL:-gpt-4o-mini}
       FINALIZER_TIMEOUT: ${FINALIZER_TIMEOUT:-8}
       FINALIZER_MAX_RETRIES: ${FINALIZER_MAX_RETRIES:-0}
+      # API keys for write endpoints (enable auth for POST /agents/)
+      # - Set API_KEY for a single key, or API_KEYS for multiple keys.
+      # - Optional expiry per key: key@YYYY-MM-DD (UTC)
+      # Example: API_KEYS=prod-key-01@2025-10-01,backup-key
+      API_KEYS: ${API_KEYS:-}
 
       # Google credentials (mounted volume)
       GMAIL_CREDENTIALS_DIR: /app/credential_folder
@@ -78,4 +83,3 @@ services:
 volumes:
   pg_data:
   creds:
-

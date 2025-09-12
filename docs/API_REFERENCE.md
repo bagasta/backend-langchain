@@ -4,11 +4,90 @@ Base URL: `http://localhost:8000`
 
 This backend exposes endpoints to create and run configurable agents, perform Gmail helper actions, and handle Google OAuth callbacks.
 
+## Authentication
+
+- DB-backed keys (recommended):
+  - Create table `public.api_key` (Prisma model `ApiKey`), and insert per-user keys (hashed; see below).
+  - The API will validate incoming keys against DB and bind requests to the owning `user_id`.
+  - POST `/agents/` requires the key; `owner_id` must match the key owner. Running an agent requires the key owner to match the agent’s owner.
+
+- Env keys (dev/hybrid fallback):
+  - When `API_KEY`/`API_KEYS` is set, the API accepts those keys as well. Format supports optional expiry and optional bound user: `key@YYYY-MM-DD#USER_ID`.
+
+- Send keys via one of:
+  - Header: `X-API-Key: <key>`
+  - Header: `Authorization: Bearer <key>`
+  - Query: `?api_key=<key>`
+
+### Managing API keys (DB-backed)
+
+- Create a key (client secret): `openssl rand -hex 32` (copy the plaintext for clients)
+- Compute SHA-256 (hex) for storage: `echo -n '<plaintext>' | sha256sum | awk '{print $1}'`
+- Insert into DB (example):
+  ```sql
+  INSERT INTO public.api_key (user_id, key_hash, label, expires_at)
+  VALUES (123, '<sha256-hex>', 'primary', '2025-10-12');
+  ```
+- Rotate monthly by inserting a new row with a future `expires_at`, switching clients, and then letting the old key expire.
+- Multiple keys can be configured using `API_KEYS`. Each key may optionally include an expiry date using `@YYYY-MM-DD`.
+  - Example: `API_KEYS="keyA@2025-10-01,keyB"` (keyA expires Oct 1, 2025; keyB never expires)
+  - If neither `API_KEY` nor `API_KEYS` is set, authentication for `/agents/` create is disabled (backward-compatible dev mode).
+
+### Generate API key (endpoint)
+- Method: `POST`
+- Path: `/api_keys/generate`
+- Auth: Required. By default, a user can only create keys for themselves. To mint a key for another user, authenticate with a bootstrap/admin key (env) or a key bound to that user.
+- Body (JSON):
+  - `user_id` (string) — optional; preferred when you already know the user id
+  - `email` (string) — optional; ensure/create a user by email when `user_id` is not provided
+  - `label` (string) — optional; freeform label
+  - `expires_at` (ISO date/datetime) — optional
+  - `ttl_days` (int) — optional; e.g., 30 for one month
+- Response (200):
+  - `ok` (boolean)
+  - `user_id` (string)
+  - `key` (string) — plaintext API key (returned once; store securely)
+  - `id` (string) — api_key row id
+  - `expires_at` (string | null)
+  - `label` (string | null)
+
+Example (admin/bootstrap creates a key for user_id=3)
+```
+BASE="http://localhost:8000"
+ADMIN_KEY="bootstrap-123"  # set on server via API_KEYS env
+
+curl -sS -X POST "$BASE/api_keys/generate" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -d '{
+        "user_id": "3",
+        "label": "primary",
+        "ttl_days": 30
+      }'
+```
+
+Example (user creates a new key for themselves)
+```
+BASE="http://localhost:8000"
+USER_KEY="<PLAINTEXT_USER_API_KEY>"  # existing key for the same user
+USER_ID="3"
+
+curl -sS -X POST "$BASE/api_keys/generate" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $USER_KEY" \
+  -d '{
+        "user_id": "'"$USER_ID"'",
+        "label": "secondary",
+        "ttl_days": 30
+      }'
+```
+
 ## Agents
 
 ### Create Agent
 - Method: `POST`
 - Path: `/agents/`
+- Auth: Required (DB-backed keys) or when `API_KEY`/`API_KEYS` is set (see Authentication)
 - Body (JSON):
   - `owner_id` (string) — required
   - `name` (string) — required
@@ -25,6 +104,27 @@ This backend exposes endpoints to create and run configurable agents, perform Gm
 - Response (200):
   - `agent_id` (string)
   - `auth_urls` (object) — optional; when any Google tools are present, includes a single unified `google` OAuth URL with the full scope set (Gmail + Calendar + Docs)
+
+Example (with X-API-Key)
+```
+BASE="http://localhost:8000"
+USER_KEY="<PLAINTEXT_USER_API_KEY>"      # from /api_keys/generate
+USER_ID="<users.id>"                     # numeric id from your users table
+
+curl -sS -X POST "$BASE/agents/" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $USER_KEY" \
+  -d '{
+        "owner_id": "'"$USER_ID"'",
+        "name": "demo-agent-1",
+        "config": {
+          "model_name": "gpt-4o-mini",
+          "system_message": "You are helpful.",
+          "tools": ["calc"],
+          "memory_enabled": true
+        }
+      }'
+```
 - Notes:
   - Tool naming: use canonical `google_*` names for Google providers, e.g. `google_gmail`, `google_calendar`, `google_docs`, `google_maps`. Legacy aliases like `gmail`, `calendar`, `docs`, `maps` are accepted and normalized.
   - Gmail tool names (e.g., `google_gmail` or `gmail`) are auto‑expanded so a single umbrella entry enables read/get/send actions.
@@ -65,6 +165,7 @@ curl --location 'http://localhost:8000/agents/' \
 ### Run Agent
 - Method: `POST`
 - Path: `/agents/{agent_id}/run`
+- Auth: Required (DB-backed keys) or when `API_KEY`/`API_KEYS` is set (see Authentication)
 - Body (JSON):
   - `message` (string) — required
   - `openai_api_key` (string) — optional; preferred way to supply per‑request key
@@ -84,26 +185,20 @@ curl --location 'http://localhost:8000/agents/' \
 
 Example:
 ```
-POST /agents/{agent_id}/run
-{
-  "message": "What is 2 + 2?",
-  "openai_api_key": "sk-...",
-  "sessionId": "1",
-  "memory_enable": true,
-  "context_memory": 100
-}
-```
+BASE="http://localhost:8000"
+USER_KEY="<PLAINTEXT_USER_API_KEY>"  # from /api_keys/generate
+AGENT_ID="<agent_id>"
+OPENAI_API_KEY="sk-..."              # your OpenAI key, per-run
 
-Curl:
-```
-curl --location 'http://localhost:8000/agents/{agentId}/run' \
---header 'Content-Type: application/json' \
---data '{
-        "message": "Siapa nama saya?",
-        "openai_api_key":"API KEY",
-        "sessionId":"1",
-        "memory_enable": false,
-        "context_memory": "10"
+curl -sS -X POST "$BASE/agents/$AGENT_ID/run" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $USER_KEY" \
+  -d '{
+        "message": "What is 2 + 2?",
+        "openai_api_key": "'"$OPENAI_API_KEY"'",
+        "sessionId": "1",
+        "memory_enable": true,
+        "context_memory": 100
       }'
 ```
 

@@ -380,6 +380,55 @@ def get_agent_owner_id(agent_id: str) -> str | None:
     return None
 
 
+def get_user_id_by_api_key(api_key: str) -> str | None:
+    """Validate a presented API key against DB and return the user_id if valid.
+
+    Relies on the Node/Prisma helper command `apikey_lookup` which expects plaintext
+    and matches by SHA-256 hash on the server side.
+    Returns the user_id (string) when valid, else None.
+    """
+    try:
+        data = _run("apikey_lookup", {"key": api_key})
+        if isinstance(data, dict) and data.get("ok") and data.get("user_id") is not None:
+            return str(data["user_id"])
+    except Exception:
+        pass
+    return None
+
+
+def create_api_key_for_user(user_id: str, label: str | None = None, expires_at: str | None = None, ttl_days: int | None = None) -> dict | None:
+    """Create a new API key for a user and return details including the plaintext.
+
+    Either provide `expires_at` (ISO date) or `ttl_days` (int). Returns a dict with
+    keys: ok, id, user_id, expires_at, plaintext on success; None on failure.
+    """
+    payload: dict = {"user_id": user_id}
+    if label is not None:
+        payload["label"] = label
+    if expires_at is not None:
+        payload["expires_at"] = expires_at
+    if ttl_days is not None:
+        payload["ttl_days"] = int(ttl_days)
+    try:
+        data = _run("apikey_create", payload)
+        if isinstance(data, dict) and data.get("ok"):
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def ensure_user(email: str, owner_key: str | None = None) -> str | None:
+    """Ensure a user row exists for email and return its id (string)."""
+    try:
+        data = _run("ensure_user", {"email": email, "ownerKey": owner_key or email.split("@")[0]})
+        if isinstance(data, dict) and data.get("ok") and data.get("user_id") is not None:
+            return str(data["user_id"])
+    except Exception:
+        pass
+    return None
+
+
 def get_cached_agent_config(agent_id: str) -> AgentConfig | None:
     """Return config from in-memory or file cache only (no DB calls)."""
     cached = _AGENT_CACHE.get(agent_id)

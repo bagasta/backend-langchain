@@ -383,8 +383,8 @@ def get_agent_owner_id(agent_id: str) -> str | None:
 def get_user_id_by_api_key(api_key: str) -> str | None:
     """Validate a presented API key against DB and return the user_id if valid.
 
-    Relies on the Node/Prisma helper command `apikey_lookup` which expects plaintext
-    and matches by SHA-256 hash on the server side.
+    Relies on the Node/Prisma helper command `apikey_lookup` which matches
+    by plaintext against the `key_hash` column (stores the plaintext key).
     Returns the user_id (string) when valid, else None.
     """
     try:

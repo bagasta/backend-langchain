@@ -117,7 +117,7 @@ curl -X POST http://localhost:8000/agents/ \
   -H 'Content-Type: application/json' \
   -d '{
         "owner_id": "user1",  # a placeholder user is auto-created if this ID doesn't exist
-        "name": "demo",
+        "agent_name": "demo-agent-1",
         "config": {
           "model_name": "gpt-4",
           "system_message": "You are a helpful bot",
@@ -147,7 +147,7 @@ Both endpoints accept optional limits: set `max_iterations` or `max_execution_ti
 
 - Default embedding model: `text-embedding-3-large` (3072 dims). Override with `EMBEDDING_MODEL`.
 - Knowledge DB: `KNOWLEDGE_DATABASE_URL` or derived from `DATABASE_URL` as `/knowledge_clevio_pro`.
-- Per‑agent knowledge tables: `public."tb_{userId}{agentId}"` with `embedding vector(3072)` and IVFFlat index.
+- Per‑agent knowledge tables: `public."tb_{userId}_{agentId}"` with `embedding vector(3072)` and IVFFlat index.
 - Logs:
   - `RAG_LOG_CONTEXT=true|false` shows snippet previews.
   - `RAG_LOG_SYSTEM_MESSAGE=true|false` prints full system message with injected context.
@@ -158,7 +158,7 @@ Both endpoints accept optional limits: set `max_iterations` or `max_execution_ti
 When `memory_enabled` is `true`, the agent tracks conversation state. Backends:
 
 - `sql` (default): uses `MEMORY_DATABASE_URL` (fallback to `DATABASE_URL`).
-  - Per‑agent tables: `public."memory_{userId}{agentId}"` with schema `(id serial, session_id varchar(255), message text)`.
+  - Per‑agent tables: `public."memory_{userId}_{agentId}"` with schema `(id serial, session_id varchar(255), message text)`.
   - Session routing: pass `sessionId` when running; a run uses token `"{userId}:{agentId}|{sessionId}"` internally so history loads from the correct table but stores `session_id` as the chat id (after the `|`).
   - Fallback writer: set `MEMORY_FALLBACK_WRITE=false` to rely solely on LangChain’s writer (prevents duplicates). When `true` (default), the fallback inserts only if rows for the same content aren’t already present.
 - `file`: JSON files under `MEMORY_DIR`.

@@ -37,7 +37,7 @@ def _memory_table_for_session(session_id: str) -> str | None:
     """Return per-agent memory table name from session id, or None for default.
 
     Expected session_id format: "<user_id>:<agent_id>" (digits), yielding
-    table name: memory_<user_id><agent_id> (e.g., memory_39).
+    table name: memory_<user_id>_<agent_id> (e.g., memory_3_9).
     """
     try:
         # Allow composite session_id in the form "<user>:<agent>|<chat>".
@@ -49,7 +49,7 @@ def _memory_table_for_session(session_id: str) -> str | None:
         uid = "".join(ch for ch in str(left) if ch.isdigit())
         aid = "".join(ch for ch in str(right) if ch.isdigit())
         if uid and aid:
-            return f"memory_{uid}{aid}"
+            return f"memory_{uid}_{aid}"
         return None
     except Exception:
         return None

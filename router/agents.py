@@ -35,9 +35,13 @@ class RunAgentRequest(BaseModel):
 
 
 class CreateAgentRequest(BaseModel):
-    """Payload model for creating an agent."""
+    """Payload model for creating an agent.
+
+    Supports both `agent_name` (preferred) and legacy `name` for backward compatibility.
+    """
     owner_id: str
-    name: str
+    agent_name: str | None = None
+    name: str | None = None
     config: AgentConfig
 
 
@@ -62,7 +66,10 @@ async def create_agent(payload: CreateAgentRequest, api=Depends(require_api_key)
             payload.config.tools = expanded
         except Exception:
             pass
-        agent_id = create_agent_record(payload.owner_id, payload.name, payload.config)
+        nm = payload.agent_name or payload.name
+        if not nm:
+            raise HTTPException(status_code=400, detail="Missing agent_name")
+        agent_id = create_agent_record(payload.owner_id, nm, payload.config)
     except Exception as exc:  # pragma: no cover - DB errors
         raise HTTPException(status_code=500, detail=str(exc))
     auth_urls = get_auth_urls(payload.config.tools, state=agent_id)

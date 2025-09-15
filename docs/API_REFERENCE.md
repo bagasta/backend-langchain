@@ -7,7 +7,7 @@ This backend exposes endpoints to create and run configurable agents, perform Gm
 ## Authentication
 
 - DB-backed keys (recommended):
-  - Create table `public.api_key` (Prisma model `ApiKey`), and insert per-user keys (hashed; see below).
+  - Create table `public.api_key` (Prisma model `ApiKey`), and insert per-user keys.
   - The API will validate incoming keys against DB and bind requests to the owning `user_id`.
   - POST `/agents/` requires the key; `owner_id` must match the key owner. Running an agent requires the key owner to match the agent’s owner.
 
@@ -22,11 +22,10 @@ This backend exposes endpoints to create and run configurable agents, perform Gm
 ### Managing API keys (DB-backed)
 
 - Create a key (client secret): `openssl rand -hex 32` (copy the plaintext for clients)
-- Compute SHA-256 (hex) for storage: `echo -n '<plaintext>' | sha256sum | awk '{print $1}'`
-- Insert into DB (example):
+- Insert into DB (example): store the plaintext in `key_hash` so it matches the value you give to clients.
   ```sql
   INSERT INTO public.api_key (user_id, key_hash, label, expires_at)
-  VALUES (123, '<sha256-hex>', 'primary', '2025-10-12');
+  VALUES (123, '<PLAINTEXT-KEY-HERE>', 'primary', '2025-10-12');
   ```
 - Rotate monthly by inserting a new row with a future `expires_at`, switching clients, and then letting the old key expire.
 - Multiple keys can be configured using `API_KEYS`. Each key may optionally include an expiry date using `@YYYY-MM-DD`.
@@ -41,8 +40,8 @@ This backend exposes endpoints to create and run configurable agents, perform Gm
   - `user_id` (string) — optional; preferred when you already know the user id
   - `email` (string) — optional; ensure/create a user by email when `user_id` is not provided
   - `label` (string) — optional; freeform label
-  - `expires_at` (ISO date/datetime) — optional
-  - `ttl_days` (int) — optional; e.g., 30 for one month
+  - `expires_at` (ISO date/datetime) — optional; when date-only is provided (e.g., `2025-10-12`), the key expires at end-of-day UTC
+  - `ttl_days` (int) — optional; e.g., 30 for one month; expiry is set to end-of-day UTC on the target date
 - Response (200):
   - `ok` (boolean)
   - `user_id` (string)
@@ -113,10 +112,10 @@ USER_ID="<users.id>"                     # numeric id from your users table
 
 curl -sS -X POST "$BASE/agents/" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: $USER_KEY" \
+  -H "Authorization: Bearer $USER_KEY" \
   -d '{
         "owner_id": "'"$USER_ID"'",
-        "name": "demo-agent-1",
+        "agent_name": "demo-agent-1",
         "config": {
           "model_name": "gpt-4o-mini",
           "system_message": "You are helpful.",
@@ -136,7 +135,7 @@ Example:
 POST /agents/
 {
 "owner_id": "3",
-"name": "demo9",
+"agent_name": "demo9",
 "config": {
 "model_name": "gpt-4o-mini",
 "system_message": "You are helpful",
@@ -152,7 +151,7 @@ curl --location 'http://localhost:8000/agents/' \
 --header 'Content-Type: application/json' \
 --data '{
 "owner_id": "3",
-"name": "demo9",
+"agent_name": "demo9",
 "config": {
 "model_name": "gpt-4o-mini",
 "system_message": "You are helpful",
@@ -355,6 +354,6 @@ curl "http://localhost:8000/oauth/google/callback?code=AUTH_CODE&state=AGENT_ID&
 - Logs can be toggled via `RAG_LOG_CONTEXT`, `RAG_LOG_SYSTEM_MESSAGE`, `RAG_SNIPPET_PREVIEW_CHARS`.
 
 ## Memory Behavior
-- SQL backend stores messages in `public."memory_{userId}{agentId}"` with columns `(id serial, session_id varchar(255), message text)`.
+- SQL backend stores messages in `public."memory_{userId}_{agentId}"` with columns `(id serial, session_id varchar(255), message text)`.
 - Session routing: pass `sessionId` in `/run`; the server routes to `"{userId}:{agentId}|{sessionId}"` and stores `session_id = sessionId`.
 - To avoid duplicates entirely, set `MEMORY_FALLBACK_WRITE=false` (disables fallback writer). When enabled (default), fallback inserts only if rows do not already exist for the same content.

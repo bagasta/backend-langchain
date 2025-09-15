@@ -101,7 +101,7 @@ def _embed_query(text: str, api_key: Optional[str] = None, model: Optional[str] 
 def _table_name(user_id: str, agent_id: str) -> str:
     uid = "".join([c for c in str(user_id) if c.isdigit()])
     aid = "".join([c for c in str(agent_id) if c.isdigit()])
-    return f"tb_{uid}{aid}"
+    return f"tb_{uid}_{aid}"
 
 
 def retrieve_topk(

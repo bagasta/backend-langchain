@@ -42,8 +42,14 @@ def _parse_allowed_keys() -> List[Tuple[str, Optional[datetime], Optional[str]]]
         if "@" in body:
             k, _, dt = body.partition("@")
             key = k.strip()
+            dt = dt.strip()
             try:
-                exp = datetime.fromisoformat(dt.strip())
+                if len(dt) == 10 and dt.count("-") == 2:
+                    # Date-only → interpret as end-of-day (naive) to match UTC comparison below
+                    y, m, d = [int(x) for x in dt.split("-")]
+                    exp = datetime(y, m, d, 23, 59, 59, 999000)
+                else:
+                    exp = datetime.fromisoformat(dt)
             except Exception:
                 exp = None
         key = (key or "").strip()

@@ -18,6 +18,7 @@ Source: `database/prisma/schema.prisma`
 - `id` (BigInt, @id, @default(autoincrement())) — primary key
 - `user_id` (BigInt) — foreign key to `User.id`, `onDelete: Cascade`
 - `user` (User @relation)
+- `agent_name` (String?) — optional display name for the agent
 - `nama_model` (String) — e.g., `gpt-4o-mini`
 - `system_message` (String) — agent’s base/system prompt
 - `tools` (String) — stored as string (JSON string recommended)

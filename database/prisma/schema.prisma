@@ -29,6 +29,8 @@ model Agent {
   id             BigInt   @id @default(autoincrement())
   user_id        BigInt
   user           User     @relation("UserToAgent", fields: [user_id], references: [id], onDelete: Cascade)
+  /// Optional display name for the agent
+  agent_name     String?
   /// Model name (e.g., gpt-4o-mini)
   nama_model     String
   system_message String
@@ -64,12 +66,12 @@ model ListAccount {
   @@map("list_account")
 }
 
-/// Per-user API keys (hashed) mapped to `api_key`
+/// Per-user API keys mapped to `api_key`
 model ApiKey {
   id           BigInt    @id @default(autoincrement())
   user_id      BigInt
   user         User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  /// Hex-encoded SHA-256 of the API key
+  /// Plaintext API key (stored as-is to match client output)
   key_hash     String    @db.VarChar(128)
   label        String?
   active       Boolean   @default(true)

@@ -73,10 +73,10 @@ async function createKnowledgeTable(userId, agentId) {
   try {
     const uid = String(userId);
     const aid = String(agentId);
-    // Keep digits only to form table suffix, per example tb_12
+    // Keep digits only to form table suffix, e.g., tb_1_2
     const uidDigits = uid.replace(/\D/g, '');
     const aidDigits = aid.replace(/\D/g, '');
-    const tableName = `tb_${uidDigits}${aidDigits}`;
+    const tableName = `tb_${uidDigits}_${aidDigits}`;
     const kp = await getKnowledgeClient();
     // Ensure extensions in the knowledge DB (best-effort)
     try { await kp.$executeRaw`CREATE EXTENSION IF NOT EXISTS vector`; } catch {}
@@ -127,7 +127,7 @@ async function createMemoryTable(userId, agentId) {
     const aid = String(agentId);
     const uidDigits = uid.replace(/\D/g, '');
     const aidDigits = aid.replace(/\D/g, '');
-    const tableName = `memory_${uidDigits}${aidDigits}`;
+    const tableName = `memory_${uidDigits}_${aidDigits}`;
     const mp = await getMemoryClient();
     // Create simple chat history table per agent
     await mp.$executeRawUnsafe(
@@ -263,7 +263,8 @@ async function main() {
     // First, try inserting into the new snake_case table directly (uses ensured user_id)
     try {
       const userId = ensuredUserId;
-      const insertAgentRows = await prisma.$queryRaw`INSERT INTO "public"."agent" ("user_id", "nama_model", "system_message", "tools", "agent_type") VALUES (${userId}, ${payload.config?.model_name}, ${payload.config?.system_message}, ${toolsValue}, ${payload.config?.agent_type || 'chat-conversational-react-description'}) RETURNING "id","user_id","nama_model","system_message","tools","agent_type","created_at","updated_at";`;
+      const agentName = (payload.agent_name != null) ? String(payload.agent_name) : (payload.name != null ? String(payload.name) : null);
+      const insertAgentRows = await prisma.$queryRaw`INSERT INTO "public"."agent" ("user_id", "agent_name", "nama_model", "system_message", "tools", "agent_type") VALUES (${userId}, ${agentName}, ${payload.config?.model_name}, ${payload.config?.system_message}, ${toolsValue}, ${payload.config?.agent_type || 'chat-conversational-react-description'}) RETURNING "id","user_id","agent_name","nama_model","system_message","tools","agent_type","created_at","updated_at";`;
       agent = insertAgentRows?.[0];
       // Best-effort table creation with short timeouts (can be disabled via env)
       const ENABLE_CREATE = String(process.env.CREATE_TABLES_ON_AGENT_CREATE || 'true').toLowerCase() !== 'false';
@@ -336,7 +337,7 @@ async function main() {
     if (!agent) {
       try {
         const rows = await prisma.$queryRawUnsafe(
-          `SELECT id, user_id, nama_model, system_message, tools, agent_type
+          `SELECT id, user_id, agent_name, nama_model, system_message, tools, agent_type
            FROM "public"."agent"
            WHERE id = CAST($1 AS bigint)
            LIMIT 1`,
@@ -369,9 +370,16 @@ async function main() {
         console.log(jsonBigInt({ ok: false, reason: 'missing_key' }));
         return;
       }
-      const hash = crypto.createHash('sha256').update(key).digest('hex');
-      const rows = await prisma.$queryRaw`SELECT user_id, active, expires_at FROM "public"."api_key" WHERE key_hash = ${hash} LIMIT 1`;
-      const row = rows && rows[0];
+      let rows = await prisma.$queryRaw`SELECT user_id, active, expires_at FROM "public"."api_key" WHERE key_hash = ${key} LIMIT 1`;
+      let row = rows && rows[0];
+      if (!row) {
+        // Backward-compat: some deployments stored SHA-256 hex in key_hash previously
+        try {
+          const legacy = crypto.createHash('sha256').update(key).digest('hex');
+          rows = await prisma.$queryRaw`SELECT user_id, active, expires_at FROM "public"."api_key" WHERE key_hash = ${legacy} LIMIT 1`;
+          row = rows && rows[0];
+        } catch {}
+      }
       if (!row) {
         console.log(jsonBigInt({ ok: false, reason: 'not_found' }));
         return;
@@ -385,7 +393,11 @@ async function main() {
       }
       // Update last_used_at best-effort
       try {
-        await prisma.$queryRaw`UPDATE "public"."api_key" SET last_used_at = NOW() WHERE key_hash = ${hash}`;
+        await prisma.$queryRaw`UPDATE "public"."api_key" SET last_used_at = NOW() WHERE key_hash = ${key}`;
+      } catch {}
+      try {
+        const legacy = crypto.createHash('sha256').update(key).digest('hex');
+        await prisma.$queryRaw`UPDATE "public"."api_key" SET last_used_at = NOW() WHERE key_hash = ${legacy}`;
       } catch {}
       console.log(jsonBigInt({ ok: true, user_id: row.user_id }));
     } catch (e) {
@@ -402,20 +414,37 @@ async function main() {
       if (!plaintext) {
         plaintext = crypto.randomBytes(32).toString('hex');
       }
-      const hash = crypto.createHash('sha256').update(plaintext).digest('hex');
       const label = (payload.label != null) ? String(payload.label) : null;
+      // Normalize expiry to end-of-day UTC to avoid premature same-day expiry
       let expiresAt = null;
       if (payload.expires_at) {
-        try { expiresAt = new Date(String(payload.expires_at)); } catch {}
+        const raw = String(payload.expires_at).trim();
+        try {
+          if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+            // Date-only → interpret as end-of-day UTC
+            const [y, m, d] = raw.split('-').map((x) => parseInt(x, 10));
+            expiresAt = new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999));
+          } else {
+            const t = new Date(raw);
+            if (!isNaN(t.getTime())) {
+              expiresAt = t;
+            }
+          }
+        } catch {}
       } else if (payload.ttl_days) {
         const days = parseInt(String(payload.ttl_days), 10);
         if (!isNaN(days) && days > 0) {
-          const d = new Date();
-          d.setUTCDate(d.getUTCDate() + days);
-          expiresAt = d;
+          const now = new Date();
+          const future = new Date(Date.UTC(
+            now.getUTCFullYear(),
+            now.getUTCMonth(),
+            now.getUTCDate() + days,
+            23, 59, 59, 999
+          ));
+          expiresAt = future;
         }
       }
-      const rows = await prisma.$queryRaw`INSERT INTO "public"."api_key" ("user_id", "key_hash", "label", "expires_at", "active") VALUES (${BigInt(userId)}, ${hash}, ${label}, ${expiresAt}, TRUE) RETURNING id, user_id, expires_at`;
+      const rows = await prisma.$queryRaw`INSERT INTO "public"."api_key" ("user_id", "key_hash", "label", "expires_at", "active") VALUES (${BigInt(userId)}, ${plaintext}, ${label}, ${expiresAt}, TRUE) RETURNING id, user_id, expires_at`;
       const row = rows && rows[0];
       console.log(jsonBigInt({ ok: true, id: row && row.id, user_id: row && row.user_id, expires_at: row && row.expires_at, plaintext }));
     } catch (e) {

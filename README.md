@@ -152,6 +152,9 @@ Both endpoints accept optional limits: set `max_iterations` or `max_execution_ti
   - `RAG_LOG_CONTEXT=true|false` shows snippet previews.
   - `RAG_LOG_SYSTEM_MESSAGE=true|false` prints full system message with injected context.
   - `RAG_SNIPPET_PREVIEW_CHARS=200` controls preview length.
+- Tuning:
+  - `RAG_TOP_K` (default `3`) keeps retrieval tight for faster responses.
+  - `RAG_MIN_SIMILARITY` (default `0.2`) skips context injection when nothing matches, avoiding extra tokens and latency.
 
 ### Conversation Memory
 
@@ -200,6 +203,9 @@ Limit context size per run by setting `context_memory` in the run payload to loa
   - `MEMORY_DIR` — for file backend
 - OpenAI client:
   - `OPENAI_TIMEOUT` (default 30), `OPENAI_MAX_RETRIES` (default 1)
+- Response finalizer:
+  - `FINALIZER_ENABLED` (`true`|`false`) controls the optional polishing pass (disabling saves an extra LLM call).
+  - `FINALIZER_MODEL` overrides the lightweight model used for polishing.
 
 ## Extending
 - **Tools**: add a module under `agents/tools/` and register it in `agents/tools/registry.py`.

@@ -94,4 +94,5 @@ Troubleshooting
 Production notes
 - Use a process supervisor (systemd) to run Uvicorn as a service.
 - Keep your `.env` secure and rotate the bootstrap key in `API_KEYS` after you’ve created per-user keys.
- - Health endpoints: `/` and `/healthz` support GET/HEAD, useful for load balancers and uptime checks.
+- Health endpoints: `/` and `/healthz` support GET/HEAD, useful for load balancers and uptime checks.
+- For faster responses, consider lowering `RAG_TOP_K` (default `3`), raising `RAG_MIN_SIMILARITY` to avoid low-value context, or disabling the optional response finalizer with `FINALIZER_ENABLED=false`.

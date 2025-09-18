@@ -24,6 +24,8 @@ def _finalize_output(
     Returns the finalized text, or None on failure.
     """
     try:
+        if os.getenv("FINALIZER_ENABLED", "true").lower() != "true":
+            return (draft_text or "").strip() or None
         if not api_key:
             return None
         text = (draft_text or "").strip()
@@ -62,7 +64,7 @@ def run_custom_agent(
     """Build agent from config and execute it on the provided message."""
     # 0. Best-effort: retrieve RAG context and augment prompt
     try:
-        top_k = int(os.getenv("RAG_TOP_K", "5"))
+        top_k = int(os.getenv("RAG_TOP_K", "3"))
     except Exception:
         top_k = 5
     # Build composite session id: "<user>:<agent>|<chat>"
@@ -91,6 +93,28 @@ def run_custom_agent(
                     )
                 else:
                     print(f"[RAG] embedding unavailable for agent={agent_id}, skipping context")
+            if snippets:
+                try:
+                    similarity_threshold = float(os.getenv("RAG_MIN_SIMILARITY", "0.2"))
+                except Exception:
+                    similarity_threshold = 0.2
+                max_similarity = None
+                for s in snippets:
+                    sim = s.get("similarity")
+                    if sim is None and s.get("score") is not None:
+                        try:
+                            sim = 1 - float(s.get("score"))
+                        except Exception:
+                            sim = None
+                    if sim is None:
+                        continue
+                    if max_similarity is None or sim > max_similarity:
+                        max_similarity = sim
+                if max_similarity is not None and max_similarity < similarity_threshold:
+                    print(
+                        f"[RAG] max similarity {max_similarity:.4f} below threshold {similarity_threshold:.2f}; skipping context"
+                    )
+                    snippets = []
             if snippets:
                 ctx = format_context(snippets)
                 # Build neat, readable log with scores and snippet previews

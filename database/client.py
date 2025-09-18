@@ -25,6 +25,10 @@ _AGENT_CACHE: dict[str, tuple[AgentConfig, float]] = {}
 _OWNER_CACHE: dict[str, str] = {}
 _LOGGER = logging.getLogger("db.client")
 
+# Binaries: allow overriding via env for systemd environments
+NODE_BIN = os.getenv("NODE_BIN", "node")
+NPX_BIN = os.getenv("NPX_BIN", "npx")
+
 
 def _with_connect_timeout(url: str, default_seconds: int = 3) -> str:
     try:
@@ -122,22 +126,23 @@ def _maybe_sync_prisma() -> None:
     # Best-effort: run migrate deploy and generate once, but don't block forever
     try:
         subprocess.run(
-            ["npx", "prisma", "migrate", "deploy"],
+            [NPX_BIN, "prisma", "migrate", "deploy"],
             cwd=str(PRISMA_DIR),
             capture_output=True,
             check=True,
             timeout=_CMD_TIMEOUT,
         )
         subprocess.run(
-            ["npx", "prisma", "generate"],
+            [NPX_BIN, "prisma", "generate"],
             cwd=str(PRISMA_DIR),
             capture_output=True,
             check=True,
             timeout=_CMD_TIMEOUT,
         )
         _SYNC_DONE = True
-    except Exception:
+    except Exception as exc:
         # Do not hard-fail here; surface errors on actual DB call
+        _LOGGER.warning("Prisma auto-sync skipped: %s", exc)
         _SYNC_DONE = True
 
 
@@ -147,7 +152,7 @@ def _run(command: str, payload: dict) -> dict:
     _precheck_db()
     try:
         result = subprocess.run(
-            ["node", str(SCRIPT), command],
+            [NODE_BIN, str(SCRIPT), command],
             cwd=str(PRISMA_DIR),
             input=json.dumps(payload),
             text=True,
@@ -156,6 +161,11 @@ def _run(command: str, payload: dict) -> dict:
             timeout=_CMD_TIMEOUT,
             env=_subprocess_env(),
         )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "Node.js binary not found. Install Node.js and ensure the service PATH includes it, "
+            "or set NODE_BIN to the absolute node path (e.g., /usr/bin/node)."
+        ) from exc
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(
             "Database operation timed out. Ensure PostgreSQL is reachable and reduce load, "

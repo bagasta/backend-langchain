@@ -29,10 +29,10 @@ APP_PORT=${APP_PORT:-8001}
 WORKERS=${WORKERS:-2}
 PRISMA_CMD_TIMEOUT=${PRISMA_CMD_TIMEOUT:-15}
 
-echo "==> Installing Nginx and Certbot"
+echo "==> Installing Nginx, Certbot, Node.js"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y nginx certbot python3-certbot-nginx
+apt-get install -y nginx certbot python3-certbot-nginx nodejs npm
 
 echo "==> Creating systemd service: /etc/systemd/system/langchain.service"
 cat > /etc/systemd/system/langchain.service <<SERVICE
@@ -42,8 +42,10 @@ After=network.target
 
 [Service]
 WorkingDirectory=$APP_DIR
-Environment=PATH=$VENV_BIN
+Environment=PATH=$VENV_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=PRISMA_CMD_TIMEOUT=$PRISMA_CMD_TIMEOUT
+# Optional override if node isn't on PATH for this service
+# Environment=NODE_BIN=/usr/bin/node
 ExecStart=$VENV_BIN/uvicorn main:app --host $APP_HOST --port $APP_PORT --workers $WORKERS --proxy-headers --log-level info
 Restart=always
 RestartSec=5
@@ -100,4 +102,3 @@ echo "==> Done. Logs:"
 echo "  - App:    journalctl -u langchain -f"
 echo "  - Nginx:  tail -f /var/log/nginx/access.log /var/log/nginx/error.log"
 echo "==> Renew test: certbot renew --dry-run"
-

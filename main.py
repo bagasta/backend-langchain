@@ -1,6 +1,7 @@
 # FastAPI entry point
 # main.py
 from fastapi import FastAPI, Response
+import logging
 from fastapi.middleware.cors import CORSMiddleware
 import os
 from dotenv import load_dotenv
@@ -15,6 +16,12 @@ from router.gmail_status import router as gmail_status_router
 from router.api_keys import router as api_keys_router
 
 app = FastAPI(title="LangChain Modular Backend")
+
+# Basic logging format with module and line for easier debugging in prod logs
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(filename)s:%(lineno)d: %(message)s",
+)
 
 # CORS configuration (for browser-based clients)
 origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "*")

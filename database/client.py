@@ -1,6 +1,7 @@
 import os
 import json
 import subprocess
+import logging
 from pathlib import Path
 import time
 
@@ -22,6 +23,7 @@ _CMD_TIMEOUT = float(os.getenv("PRISMA_CMD_TIMEOUT", "4"))  # seconds (short to 
 _CACHE_TTL = float(os.getenv("AGENT_CACHE_TTL", "300"))  # seconds, 5 minutes default
 _AGENT_CACHE: dict[str, tuple[AgentConfig, float]] = {}
 _OWNER_CACHE: dict[str, str] = {}
+_LOGGER = logging.getLogger("db.client")
 
 
 def _with_connect_timeout(url: str, default_seconds: int = 3) -> str:
@@ -212,12 +214,12 @@ def get_agent_config(agent_id: str) -> AgentConfig:
         # Fallback to file cache or in-memory cache on Prisma errors
         file_cfg = _read_cached_config(agent_id)
         if file_cfg is not None:
-            print(f"[WARN] Prisma get failed; using file cache for {agent_id}: {exc}")
+            _LOGGER.warning("Prisma get failed; using file cache for %s: %s", agent_id, exc)
             _AGENT_CACHE[agent_id] = (file_cfg, now)
             return file_cfg
         cached = _AGENT_CACHE.get(agent_id)
         if cached:
-            print(f"[WARN] Prisma get failed; using in-memory cache for {agent_id}: {exc}")
+            _LOGGER.warning("Prisma get failed; using in-memory cache for %s: %s", agent_id, exc)
             return cached[0]
         raise
 
@@ -269,7 +271,7 @@ def list_agents_raw() -> list[dict]:
             return data
         return []
     except Exception as exc:
-        print(f"[WARN] list_agents_raw failed: {exc}")
+        _LOGGER.warning("list_agents_raw failed: %s", exc)
         return []
 
 
@@ -337,14 +339,17 @@ def save_agent_google_token(agent_id: str, email: str, token: dict) -> None:
 
     Upserts on (user_id, agent_id, email) inside the Node layer.
     """
-    _run(
-        "save_token",
-        {
-            "agent_id": agent_id,
-            "email": email,
-            "servicesaccount": token,
-        },
-    )
+    try:
+        _run(
+            "save_token",
+            {
+                "agent_id": agent_id,
+                "email": email,
+                "servicesaccount": token,
+            },
+        )
+    except Exception:
+        _LOGGER.exception("save_agent_google_token failed for agent_id=%r email=%r", agent_id, email)
 
 
 def get_agent_owner_id(agent_id: str) -> str | None:
@@ -376,7 +381,7 @@ def get_agent_owner_id(agent_id: str) -> str | None:
                 _write_cached_owner(agent_id, oid)
                 return oid
     except Exception:
-        pass
+        _LOGGER.exception("get_agent_owner_id failed for agent_id=%r", agent_id)
     return None
 
 
@@ -392,7 +397,7 @@ def get_user_id_by_api_key(api_key: str) -> str | None:
         if isinstance(data, dict) and data.get("ok") and data.get("user_id") is not None:
             return str(data["user_id"])
     except Exception:
-        pass
+        _LOGGER.exception("get_user_id_by_api_key failed")
     return None
 
 
@@ -413,8 +418,15 @@ def create_api_key_for_user(user_id: str, label: str | None = None, expires_at: 
         data = _run("apikey_create", payload)
         if isinstance(data, dict) and data.get("ok"):
             return data
+        _LOGGER.error("apikey_create returned non-ok response: %r", data)
     except Exception:
-        pass
+        _LOGGER.exception(
+            "apikey_create failed for user_id=%r label=%r ttl_days=%r expires_at=%r",
+            user_id,
+            label,
+            ttl_days,
+            expires_at,
+        )
     return None
 
 
@@ -425,7 +437,7 @@ def ensure_user(email: str, owner_key: str | None = None) -> str | None:
         if isinstance(data, dict) and data.get("ok") and data.get("user_id") is not None:
             return str(data["user_id"])
     except Exception:
-        pass
+        _LOGGER.exception("ensure_user failed for email=%r", email)
     return None
 
 

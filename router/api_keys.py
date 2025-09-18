@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Depends
+import logging
 from pydantic import BaseModel
 from typing import Optional
 
@@ -9,6 +10,7 @@ from database.client import create_api_key_for_user
 
 
 router = APIRouter()
+logger = logging.getLogger("api_keys")
 
 
 class GenerateKeyRequest(BaseModel):
@@ -33,20 +35,34 @@ async def generate_api_key(payload: GenerateKeyRequest, api=Depends(require_api_
     # Only allow generating a key for oneself unless you build an admin layer
     try:
         api_uid = str(api.get("user_id")) if isinstance(api, dict) and api.get("user_id") is not None else None
+        logger.info(
+            "generate_api_key requested label=%r ttl_days=%r expires_at=%r by_user=%r target_user=%r email=%r",
+            payload.label,
+            payload.ttl_days,
+            payload.expires_at,
+            api_uid,
+            payload.user_id,
+            payload.email,
+        )
         # If user_id provided, enforce equality with the caller
         if payload.user_id is not None and api_uid is not None and str(payload.user_id) != api_uid:
             raise HTTPException(status_code=403, detail="API key is not authorized to create keys for other users")
     except HTTPException:
         raise
     except Exception:
-        pass
+        logger.exception("generate_api_key: error while validating caller vs target user")
 
     # If email is provided and user_id is not, ensure user exists and use that id
     uid = payload.user_id
     if uid is None and payload.email:
         from database.client import ensure_user
-        ensured = ensure_user(payload.email)
+        try:
+            ensured = ensure_user(payload.email)
+        except Exception:
+            logger.exception("generate_api_key: ensure_user raised for email=%r", payload.email)
+            raise HTTPException(status_code=500, detail="Failed to ensure user by email (internal error)")
         if not ensured:
+            logger.error("generate_api_key: ensure_user returned None for email=%r", payload.email)
             raise HTTPException(status_code=500, detail="Failed to ensure user by email")
         uid = ensured
         # If caller has a bound user, ensure it matches the ensured id
@@ -56,12 +72,23 @@ async def generate_api_key(payload: GenerateKeyRequest, api=Depends(require_api_
         except HTTPException:
             raise
         except Exception:
-            pass
+            logger.exception("generate_api_key: error while enforcing caller user match")
     if not uid:
         raise HTTPException(status_code=400, detail="Provide user_id or email")
 
-    res = create_api_key_for_user(uid, label=payload.label, expires_at=payload.expires_at, ttl_days=payload.ttl_days)
+    try:
+        res = create_api_key_for_user(uid, label=payload.label, expires_at=payload.expires_at, ttl_days=payload.ttl_days)
+    except Exception:
+        logger.exception("generate_api_key: create_api_key_for_user raised for user_id=%r", uid)
+        raise HTTPException(status_code=500, detail="Failed to generate API key (internal error)")
     if not res or not res.get("ok"):
+        logger.error(
+            "generate_api_key: create_api_key_for_user returned failure for user_id=%r label=%r ttl_days=%r expires_at=%r",
+            uid,
+            payload.label,
+            payload.ttl_days,
+            payload.expires_at,
+        )
         raise HTTPException(status_code=500, detail="Failed to generate API key")
     return GenerateKeyResponse(
         ok=True,

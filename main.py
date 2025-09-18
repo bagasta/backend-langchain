@@ -1,6 +1,6 @@
 # FastAPI entry point
 # main.py
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 import os
 from dotenv import load_dotenv
@@ -55,3 +55,17 @@ app.include_router(api_keys_router, tags=["api_keys"])  # /api_keys/generate
 @app.get("/")
 async def root():
     return {"message": "LangChain backend is up 🚀"}
+
+# Respond OK to HEAD requests at root (useful for load balancers/monitors)
+@app.head("/")
+async def root_head():
+    return Response(status_code=200)
+
+# Simple health endpoint for probes (supports GET/HEAD)
+@app.get("/healthz")
+async def healthz():
+    return {"ok": True}
+
+@app.head("/healthz")
+async def healthz_head():
+    return Response(status_code=200)

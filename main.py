@@ -14,6 +14,7 @@ from database.memory_bootstrap import ensure_memory_database
 from router.oauth import router as oauth_router
 from router.gmail_status import router as gmail_status_router
 from router.api_keys import router as api_keys_router
+from agents.rag import warm_rag_clients
 
 app = FastAPI(title="LangChain Modular Backend")
 
@@ -51,6 +52,10 @@ async def _bootstrap_memory_db():
         ensure_memory_database()
     except Exception:
         # Do not block startup if remote admin perms are missing
+        pass
+    try:
+        warm_rag_clients()
+    except Exception:
         pass
 
 # mount router /agents

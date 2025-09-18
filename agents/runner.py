@@ -2,6 +2,9 @@
 # agents/runner.py
 
 import os
+import time
+import logging
+from typing import Optional, Callable
 from uuid import uuid4
 from config.schema import AgentConfig
 from agents.builder import build_agent
@@ -10,6 +13,39 @@ from agents.rag import retrieve_topk, format_context, embed_text
 from agents.memory import persist_conversation
 import json
 from langchain_openai import ChatOpenAI
+
+
+logger = logging.getLogger("runner")
+if not logger.handlers:
+    level = os.getenv("RUNNER_LOG_LEVEL", "INFO").upper()
+    try:
+        logger.setLevel(getattr(logging, level, logging.INFO))
+    except Exception:
+        logger.setLevel(logging.INFO)
+
+
+def _approx_tokens(text: str) -> int:
+    return max(1, int(len(text) / 4))
+
+
+def _dedupe_and_limit(snippets: list[dict], max_tokens: int) -> tuple[list[dict], int]:
+    seen = set()
+    total_tokens = 0
+    filtered: list[dict] = []
+    for s in snippets:
+        text = (s.get("text") or "").strip()
+        if not text:
+            continue
+        key = text[:256]
+        if key in seen:
+            continue
+        tokens = _approx_tokens(text)
+        if total_tokens + tokens > max_tokens:
+            break
+        seen.add(key)
+        filtered.append(s)
+        total_tokens += tokens
+    return filtered, total_tokens
 
 
 def _finalize_output(
@@ -53,6 +89,210 @@ def _finalize_output(
         return None
 
 
+def _fast_rag_answer(
+    snippets: list[dict],
+    question: str,
+    api_key: str | None,
+    language_hint: str | None = None,
+    metrics: dict | None = None,
+    max_tokens: int | None = None,
+) -> str | None:
+    """Return a quick summary purely from retrieved snippets without running the full agent."""
+
+    if not snippets:
+        return None
+    key = api_key or os.getenv("OPENAI_API_KEY")
+    if not key:
+        return None
+    try:
+        model = os.getenv("FAST_RAG_MODEL", os.getenv("FINALIZER_MODEL", "gpt-4o-mini"))
+        timeout = float(os.getenv("FAST_RAG_TIMEOUT", "6"))
+        max_retries = int(os.getenv("FAST_RAG_MAX_RETRIES", "0"))
+        limit_tokens = max_tokens or int(os.getenv("FAST_RAG_MAX_TOKENS", "400"))
+    except Exception:
+        model = "gpt-4o-mini"
+        timeout = 6.0
+        max_retries = 0
+        limit_tokens = 400
+
+    prompt_context = format_context(snippets)
+    if not prompt_context:
+        return None
+
+    sys = (
+        "You are a concise assistant who answers strictly using the provided context. "
+        "If the context does not contain the answer, say you do not know. "
+        "Cite snippet numbers when relevant."
+    )
+    if language_hint:
+        sys += f" Respond in {language_hint}."
+
+    try:
+        llm = ChatOpenAI(
+            model=model,
+            api_key=key,
+            temperature=0,
+            timeout=timeout,
+            max_retries=max_retries,
+            max_tokens=limit_tokens,
+        )
+        msg = llm.invoke(
+            [
+                {"role": "system", "content": sys},
+                {
+                    "role": "user",
+                    "content": (
+                        "Context:\n"
+                        + prompt_context
+                        + "\n\nQuestion: "
+                        + question.strip()
+                        + "\n\nAnswer in one short paragraph."
+                    ),
+                },
+            ]
+        )
+        answer = getattr(msg, "content", "")
+        out = answer.strip() or None
+        if metrics is not None:
+            metrics.setdefault("t_llm_prefill", 0.0)
+            metrics.setdefault("t_first_token", 0.0)
+        return out
+    except Exception:
+        return None
+
+
+def run_fast_rag_stream(
+    agent_id: str,
+    owner_id: str | None,
+    config: AgentConfig,
+    message: str,
+    session_id_for_memory: str,
+    chat_sid: str,
+) -> tuple[Optional[callable], dict]:
+    metrics: dict[str, float | int] = {}
+    overall_start = time.perf_counter()
+    embed_start = time.perf_counter()
+    vector = embed_text(message, api_key=config.openai_api_key)
+    metrics["t_embed"] = time.perf_counter() - embed_start
+    if not vector:
+        return None, metrics
+    retrieve_start = time.perf_counter()
+    snippets = retrieve_topk(
+        owner_id or "",
+        agent_id,
+        message,
+        top_k=int(os.getenv("RAG_TOP_K", "3")),
+        api_key=config.openai_api_key,
+        query_vector=vector,
+    )
+    metrics["t_retrieve"] = time.perf_counter() - retrieve_start
+    if not snippets:
+        return None, metrics
+    try:
+        similarity_threshold = float(os.getenv("RAG_MIN_SIMILARITY", "0.2"))
+    except Exception:
+        similarity_threshold = 0.2
+    max_sim = max(
+        (
+            s.get("similarity")
+            if s.get("similarity") is not None
+            else 1 - float(s.get("score"))
+            if s.get("score") is not None
+            else None
+        )
+        for s in snippets
+    )
+    if max_sim is not None:
+        metrics["max_similarity"] = max_sim
+    if max_sim is not None and max_sim < similarity_threshold:
+        return None, metrics
+    max_prompt_tokens = int(os.getenv("RAG_MAX_PROMPT_TOKENS", "2000"))
+    snippets, prompt_tokens = _dedupe_and_limit(snippets, max_prompt_tokens)
+    metrics["prompt_tokens"] = prompt_tokens
+    if not snippets:
+        return None, metrics
+    context = format_context(snippets)
+    if not context:
+        return None, metrics
+    key = config.openai_api_key or os.getenv("OPENAI_API_KEY")
+    if not key:
+        return None, metrics
+    model = os.getenv("FAST_RAG_MODEL", "gpt-4o-mini")
+    timeout = float(os.getenv("FAST_RAG_TIMEOUT", "6"))
+    max_retries = int(os.getenv("FAST_RAG_MAX_RETRIES", "0"))
+    max_tokens = int(os.getenv("FAST_RAG_MAX_TOKENS", "400"))
+    language_hint = os.getenv("FAST_RAG_LANGUAGE")
+    sys = (
+        "You are a concise assistant who answers strictly using the provided context. "
+        "If the context does not contain the answer, say you do not know. "
+        "Cite snippet numbers when relevant."
+    )
+    if language_hint:
+        sys += f" Respond in {language_hint}."
+    llm = ChatOpenAI(
+        model=model,
+        api_key=key,
+        temperature=0,
+        timeout=timeout,
+        max_retries=max_retries,
+        max_tokens=max_tokens,
+    )
+
+    def generator():
+        aggregated: list[str] = []
+        prefill_start = time.perf_counter()
+        first_token_recorded = False
+        try:
+            for chunk in llm.stream(
+                [
+                    {"role": "system", "content": sys},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Context:\n"
+                            + context
+                            + "\n\nQuestion: "
+                            + message.strip()
+                            + "\n\nAnswer in one short paragraph."
+                        ),
+                    },
+                ]
+            ):
+                token = getattr(chunk, "content", "") or ""
+                if not token:
+                    continue
+                aggregated.append(token)
+                if not first_token_recorded:
+                    metrics["t_first_token"] = time.perf_counter() - prefill_start
+                    first_token_recorded = True
+                yield token
+        finally:
+            metrics["t_llm_prefill"] = time.perf_counter() - prefill_start
+            metrics["t_total"] = time.perf_counter() - overall_start
+            metrics["retrieved"] = len(snippets)
+            logger.info(
+                "[RAG] stream metrics agent=%s t_embed=%.3f t_retrieve=%.3f t_first_token=%.3f t_llm_prefill=%.3f prompt_tokens=%s",
+                agent_id,
+                metrics.get("t_embed", 0.0),
+                metrics.get("t_retrieve", 0.0),
+                metrics.get("t_first_token", -1.0),
+                metrics.get("t_llm_prefill", -1.0),
+                metrics.get("prompt_tokens", 0),
+            )
+            try:
+                if os.getenv("MEMORY_FALLBACK_WRITE", "true").lower() == "true":
+                    persist_conversation(
+                        session_id_for_memory,
+                        message,
+                        "".join(aggregated),
+                        chat_session_id=chat_sid,
+                    )
+            except Exception as exc:
+                logger.warning("[RAG] streaming persist failed: %s", exc)
+
+    return generator, metrics
+
+
 def run_custom_agent(
     agent_id: str,
     config: AgentConfig,
@@ -62,6 +302,8 @@ def run_custom_agent(
     rag_enable: bool | None = None,
 ) -> str:
     """Build agent from config and execute it on the provided message."""
+    metrics: dict[str, float | int] = {}
+    overall_start = time.perf_counter()
     # 0. Best-effort: retrieve RAG context and augment prompt
     try:
         top_k = int(os.getenv("RAG_TOP_K", "3"))
@@ -81,8 +323,11 @@ def run_custom_agent(
                 use_rag = bool(rag_enable)
             snippets: list[dict] = []
             if use_rag:
+                embed_start = time.perf_counter()
                 query_vector = embed_text(message, api_key=config.openai_api_key)
+                metrics["t_embed"] = time.perf_counter() - embed_start
                 if query_vector:
+                    retrieve_start = time.perf_counter()
                     snippets = retrieve_topk(
                         user_id,
                         agent_id,
@@ -91,6 +336,7 @@ def run_custom_agent(
                         api_key=config.openai_api_key,
                         query_vector=query_vector,
                     )
+                    metrics["t_retrieve"] = time.perf_counter() - retrieve_start
                 else:
                     print(f"[RAG] embedding unavailable for agent={agent_id}, skipping context")
             if snippets:
@@ -110,11 +356,44 @@ def run_custom_agent(
                         continue
                     if max_similarity is None or sim > max_similarity:
                         max_similarity = sim
+                if max_similarity is not None:
+                    metrics["max_similarity"] = max_similarity
                 if max_similarity is not None and max_similarity < similarity_threshold:
                     print(
                         f"[RAG] max similarity {max_similarity:.4f} below threshold {similarity_threshold:.2f}; skipping context"
                     )
                     snippets = []
+            if snippets:
+                max_prompt_tokens = int(os.getenv("RAG_MAX_PROMPT_TOKENS", "2000"))
+                snippets, prompt_tokens = _dedupe_and_limit(snippets, max_prompt_tokens)
+                metrics["prompt_tokens"] = prompt_tokens
+            fast_rag_mode = (
+                os.getenv("FAST_RAG_RESPONSE", "true").lower() == "true"
+                and not config.tools
+            )
+            if snippets and fast_rag_mode:
+                fast_metrics: dict[str, float | int] = {}
+                fast_answer = _fast_rag_answer(
+                    snippets,
+                    message,
+                    config.openai_api_key,
+                    language_hint=os.getenv("FAST_RAG_LANGUAGE"),
+                    metrics=fast_metrics,
+                    max_tokens=int(os.getenv("FAST_RAG_MAX_TOKENS", "400")),
+                )
+                if fast_answer:
+                    metrics.update(fast_metrics)
+                    try:
+                        if os.getenv("MEMORY_FALLBACK_WRITE", "true").lower() == "true":
+                            persist_conversation(
+                                session_id_for_memory,
+                                message,
+                                fast_answer,
+                                chat_session_id=chat_sid,
+                            )
+                    except Exception:
+                        pass
+                    return fast_answer
             if snippets:
                 ctx = format_context(snippets)
                 # Build neat, readable log with scores and snippet previews
@@ -327,4 +606,16 @@ def run_custom_agent(
             persist_conversation(session_id_for_memory, message, result, chat_session_id=chat_sid)
     except Exception:
         pass
+    metrics["t_total"] = time.perf_counter() - overall_start
+    logger.info(
+        "[RAG] timings agent=%s t_embed=%.3f t_retrieve=%.3f prompt_tokens=%s t_agent=%.3f t_llm_prefill=%.3f t_first_token=%.3f t_total=%.3f",
+        agent_id,
+        metrics.get("t_embed", 0.0),
+        metrics.get("t_retrieve", 0.0),
+        metrics.get("prompt_tokens", 0),
+        metrics.get("t_agent_invoke", 0.0),
+        metrics.get("t_llm_prefill", -1.0),
+        metrics.get("t_first_token", -1.0),
+        metrics.get("t_total", 0.0),
+    )
     return result

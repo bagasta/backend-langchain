@@ -96,3 +96,5 @@ Production notes
 - Keep your `.env` secure and rotate the bootstrap key in `API_KEYS` after you’ve created per-user keys.
 - Health endpoints: `/` and `/healthz` support GET/HEAD, useful for load balancers and uptime checks.
 - For faster responses, consider lowering `RAG_TOP_K` (default `3`), raising `RAG_MIN_SIMILARITY` to avoid low-value context, or disabling the optional response finalizer with `FINALIZER_ENABLED=false`.
+- When queries only need knowledge-base answers (no tools), enable the quick path with `FAST_RAG_RESPONSE=true` and optionally tune `FAST_RAG_MODEL` / `FAST_RAG_TIMEOUT` / `FAST_RAG_MAX_TOKENS`.
+- To stream answers and cut TTFB, keep `FAST_RAG_STREAM=true`; tokens flush as soon as the first chunk arrives.

@@ -155,6 +155,8 @@ Both endpoints accept optional limits: set `max_iterations` or `max_execution_ti
 - Tuning:
   - `RAG_TOP_K` (default `3`) keeps retrieval tight for faster responses.
   - `RAG_MIN_SIMILARITY` (default `0.2`) skips context injection when nothing matches, avoiding extra tokens and latency.
+  - `FAST_RAG_RESPONSE=true|false` enables a lightweight response path (no agent/tool run) when only RAG snippets are needed. Use `FAST_RAG_MODEL`, `FAST_RAG_TIMEOUT`, and `FAST_RAG_MAX_TOKENS` to tune it.
+  - `FAST_RAG_STREAM=true|false` streams RAG-only answers token by token (default `true`).
 
 ### Conversation Memory
 
@@ -206,6 +208,8 @@ Limit context size per run by setting `context_memory` in the run payload to loa
 - Response finalizer:
   - `FINALIZER_ENABLED` (`true`|`false`) controls the optional polishing pass (disabling saves an extra LLM call).
   - `FINALIZER_MODEL` overrides the lightweight model used for polishing.
+  - `FAST_RAG_MODEL` / `FAST_RAG_TIMEOUT` / `FAST_RAG_MAX_TOKENS` configure the quick RAG summarizer when `FAST_RAG_RESPONSE=true`.
+  - `FAST_RAG_LANGUAGE` forces the fast RAG summarizer to respond in a specific language (optional).
 
 ## Extending
 - **Tools**: add a module under `agents/tools/` and register it in `agents/tools/registry.py`.

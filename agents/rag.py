@@ -1,6 +1,7 @@
 import os
 import logging
-from typing import List, Optional, Any, Sequence
+import time
+from typing import List, Optional, Any, Sequence, Tuple
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -46,18 +47,25 @@ def _derive_knowledge_url() -> Optional[str]:
         return None
 
 
+_KNOWLEDGE_CONN = None
+
+
 def _connect_knowledge() -> Optional[Any]:
     url = _derive_knowledge_url()
     if not url:
         return None
     try:
+        global _KNOWLEDGE_CONN
+        if _KNOWLEDGE_CONN is not None and getattr(_KNOWLEDGE_CONN, "closed", 1) == 0:
+            return _KNOWLEDGE_CONN
         # Short connect timeout to avoid blocking
-        conn = psycopg2.connect(url, connect_timeout=3)
+        conn = psycopg2.connect(url, connect_timeout=1)
         # Avoid long-running transactions for read-only similarity queries
         try:
             conn.autocommit = True
         except Exception:
             pass
+        _KNOWLEDGE_CONN = conn
         return conn
     except Exception:
         logger.warning("[RAG] connection to knowledge DB failed; skipping RAG")
@@ -65,6 +73,9 @@ def _connect_knowledge() -> Optional[Any]:
 
 # Track which tables we've optimized (index/ANALYZE) to avoid repeated DDL
 _OPTIMIZED_TABLES: set[str] = set()
+_EMBED_CACHE_TTL = float(os.getenv("RAG_EMBED_CACHE_TTL_SECONDS", "900"))
+_EMBED_CACHE_MAX = int(os.getenv("RAG_EMBED_CACHE_MAX", "512"))
+_EMBED_CACHE: dict[Tuple[str, str], Tuple[float, List[float]]] = {}
 
 
 def _distance_to_similarity(distance: Any) -> Optional[float]:
@@ -100,19 +111,31 @@ def _embed_query(text: str, api_key: Optional[str] = None, model: Optional[str] 
         return None
     # Default to OpenAI text-embedding-3-large (3072 dims) unless overridden
     model_name = model or os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
+    cache_key = (model_name, text.strip())
+    now = time.time()
+    cached = _EMBED_CACHE.get(cache_key)
+    if cached and now - cached[0] <= _EMBED_CACHE_TTL:
+        logger.info("[RAG] embedding cache hit (model=%s)", model_name)
+        return cached[1]
     # Apply shorter timeout and fewer retries for snappy RAG
     try:
-        timeout = float(os.getenv("OPENAI_EMBEDDING_TIMEOUT", "10"))
+        timeout = float(os.getenv("OPENAI_EMBEDDING_TIMEOUT", "1"))
     except Exception:
-        timeout = 10.0
+        timeout = 1.0
+    timeout = min(timeout, 1.0)
     try:
-        retries = int(os.getenv("OPENAI_EMBEDDING_MAX_RETRIES", "1"))
+        retries = int(os.getenv("OPENAI_EMBEDDING_MAX_RETRIES", "0"))
     except Exception:
-        retries = 1
+        retries = 0
     emb = OpenAIEmbeddings(model=model_name, api_key=key, timeout=timeout, max_retries=retries)
     try:
         v = emb.embed_query(text)
         logger.info(f"[RAG] embedded query with model={model_name}, dim={len(v)}")
+        if _EMBED_CACHE_MAX > 0:
+            if len(_EMBED_CACHE) >= _EMBED_CACHE_MAX:
+                oldest_key = min(_EMBED_CACHE.items(), key=lambda item: item[1][0])[0]
+                _EMBED_CACHE.pop(oldest_key, None)
+            _EMBED_CACHE[cache_key] = (now, v)
         return v
     except Exception as e:
         logger.warning(f"[RAG] embedding failed: {e}")
@@ -123,6 +146,22 @@ def embed_text(text: str, api_key: Optional[str] = None, model: Optional[str] = 
     """Public helper to embed arbitrary text using the configured embeddings provider."""
 
     return _embed_query(text, api_key=api_key, model=model)
+
+
+def warm_rag_clients() -> None:
+    """Warm OpenAI and Postgres clients to avoid first-request latency."""
+
+    try:
+        if os.getenv("RAG_WARM_ON_START", "true").lower() != "true":
+            return
+        sample_text = os.getenv("RAG_WARM_TEXT", "Warmup token")
+        embed_text(sample_text)
+        conn = _connect_knowledge()
+        if conn is not None:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+    except Exception as exc:
+        logger.warning("[RAG] warmup failed: %s", exc)
 
 
 def _table_name(user_id: str, agent_id: str) -> str:
@@ -196,16 +235,16 @@ def retrieve_topk(
                         _cur.execute(
                             f"CREATE INDEX \"{tbl}_embedding_idx\" ON public.\"{tbl}\" USING ivfflat (embedding {ops})"
                         )
-                    except Exception:
-                        pass
+                    except Exception as index_exc:
+                        logger.warning("[RAG] index ensure failed for %s: %s", tbl, index_exc)
                     if os.getenv("RAG_ANALYZE", "true").lower() == "true":
                         try:
                             _cur.execute(f"ANALYZE public.\"{tbl}\"")
-                        except Exception:
-                            pass
+                        except Exception as analyze_exc:
+                            logger.warning("[RAG] analyze failed for %s: %s", tbl, analyze_exc)
                 _OPTIMIZED_TABLES.add(tbl)
         except Exception as _e:  # pragma: no cover - permissions or races
-            pass
+            logger.warning("[RAG] index preparation failed: %s", _e)
         # Build vector string literal and bind as a parameter so psycopg2 quotes it
         vec_str = "[" + ",".join(f"{float(x):.8f}" for x in vec) + "]"
         sql = f"""
@@ -217,7 +256,7 @@ def retrieve_topk(
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             # Statement timeout to fail fast on slow remote queries
             try:
-                ms = int(os.getenv("RAG_STATEMENT_TIMEOUT_MS", "2000"))
+                ms = int(os.getenv("RAG_STATEMENT_TIMEOUT_MS", "500"))
                 cur.execute(f"SET statement_timeout TO {ms}")
             except Exception:
                 pass

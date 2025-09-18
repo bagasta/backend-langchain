@@ -1,10 +1,11 @@
 # Endpoint for creating and running agents
 # router/agents.py
 from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import StreamingResponse
 import os
 from pydantic import BaseModel
 from config.schema import AgentConfig
-from agents.runner import run_custom_agent
+from agents.runner import run_custom_agent, run_fast_rag_stream
 from agents.tools.registry import get_auth_urls, expand_tool_names
 from database.client import (
     create_agent_record,
@@ -13,6 +14,7 @@ from database.client import (
     warm_cache_for_all,
     get_cached_agent_config,
 )
+from uuid import uuid4
 
 router = APIRouter()
 
@@ -81,11 +83,13 @@ async def create_agent(payload: CreateAgentRequest, api=Depends(require_api_key)
 @router.post("/{agent_id}/run", summary="Run an agent by ID")
 async def run_agent(agent_id: str, payload: RunAgentRequest, api=Depends(require_api_key)):
     try:
+        agent_owner_id = None
         # Authorization check: API key owner must match agent owner
         try:
             api_uid = str(api.get("user_id")) if isinstance(api, dict) and api.get("user_id") is not None else None
             if api_uid is not None:
                 oid = get_agent_owner_id(agent_id)
+                agent_owner_id = oid
                 if oid is not None and str(oid) != api_uid:
                     raise HTTPException(status_code=403, detail="API key is not authorized for this agent")
                 # If payload.owner_id is provided, ensure consistency as well
@@ -146,11 +150,35 @@ async def run_agent(agent_id: str, payload: RunAgentRequest, api=Depends(require
                 config.memory_max_messages = cm
         except Exception:
             pass
+        chat_sid = (payload.sessionId or "").strip() or uuid4().hex
+        table_key = agent_id
+        owner_for_memory = payload.owner_id or agent_owner_id
+        if owner_for_memory:
+            table_key = f"{owner_for_memory}:{agent_id}"
+        session_id_for_memory = f"{table_key}|{chat_sid}"
+
+        stream_enabled = (
+            os.getenv("FAST_RAG_STREAM", "true").lower() == "true"
+            and (not config.tools)
+            and (payload.rag_enable is None or bool(payload.rag_enable))
+            and owner_for_memory is not None
+        )
+        if stream_enabled:
+            generator, _ = run_fast_rag_stream(
+                agent_id,
+                owner_for_memory,
+                config,
+                payload.message,
+                session_id_for_memory=session_id_for_memory,
+                chat_sid=chat_sid,
+            )
+            if generator is not None:
+                return StreamingResponse(generator(), media_type="text/plain")
         result = run_custom_agent(
             agent_id,
             config,
             payload.message,
-            session_id=payload.sessionId,
+            session_id=payload.sessionId or chat_sid,
             owner_id=payload.owner_id,
             rag_enable=payload.rag_enable,
         )

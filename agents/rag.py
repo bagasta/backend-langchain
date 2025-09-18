@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import List, Tuple, Optional, Any
+from typing import List, Optional, Any, Sequence
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -67,6 +67,27 @@ def _connect_knowledge() -> Optional[Any]:
 _OPTIMIZED_TABLES: set[str] = set()
 
 
+def _distance_to_similarity(distance: Any) -> Optional[float]:
+    """Convert cosine distance (0..2) to similarity (1..-1).
+
+    Returns None when distance cannot be interpreted as a float.
+    """
+
+    if distance is None:
+        return None
+    try:
+        similarity = 1.0 - float(distance)
+    except (TypeError, ValueError):
+        return None
+    # Cosine similarity is theoretically in [-1, 1]. Clamp gently to avoid
+    # noisy values from numerical error.
+    if similarity > 1.0:
+        similarity = 1.0
+    elif similarity < -1.0:
+        similarity = -1.0
+    return similarity
+
+
 def _embed_query(text: str, api_key: Optional[str] = None, model: Optional[str] = None) -> Optional[List[float]]:
     if not text:
         return None
@@ -98,6 +119,12 @@ def _embed_query(text: str, api_key: Optional[str] = None, model: Optional[str] 
         return None
 
 
+def embed_text(text: str, api_key: Optional[str] = None, model: Optional[str] = None) -> Optional[List[float]]:
+    """Public helper to embed arbitrary text using the configured embeddings provider."""
+
+    return _embed_query(text, api_key=api_key, model=model)
+
+
 def _table_name(user_id: str, agent_id: str) -> str:
     uid = "".join([c for c in str(user_id) if c.isdigit()])
     aid = "".join([c for c in str(agent_id) if c.isdigit()])
@@ -107,24 +134,46 @@ def _table_name(user_id: str, agent_id: str) -> str:
 def retrieve_topk(
     user_id: str,
     agent_id: str,
-    query: str,
+    query: Optional[str],
     top_k: int = 3,
     api_key: Optional[str] = None,
+    query_vector: Optional[Sequence[float]] = None,
 ) -> List[dict]:
-    """Return top-k rows from the agent's knowledge table ordered by vector similarity.
+    """Return top-k rows ordered by cosine similarity to the provided query vector.
 
-    Each row dict contains: id (uuid), text (str), metadata (dict|None), score (float distance)
+    Each row dict contains: id (uuid), text (str), metadata (dict|None), score (cosine distance)
+    and similarity (1 - distance when computable).
     """
+
     if os.getenv("RAG_ENABLED", "true").lower() != "true":
         logger.info("[RAG] disabled via RAG_ENABLED; skipping")
         return []
-    logger.info(f"[RAG] start retrieval user_id={user_id} agent_id={agent_id} top_k={top_k}")
-    # Prefer large embeddings by default for compatibility with 3072-dim pgvector columns
+    try:
+        top_k = max(1, int(top_k))
+    except Exception:
+        top_k = 3
+    logger.info(
+        f"[RAG] start retrieval user_id={user_id} agent_id={agent_id} top_k={top_k}"
+    )
+
     primary_model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
-    vec = _embed_query(query, api_key, model=primary_model)
-    if not vec:
-        logger.info("[RAG] no embedding; retrieval skipped")
-        return []
+
+    # Accept a pre-computed embedding (preferred) or embed inline as a fallback
+    vec: Optional[List[float]] = None
+    if query_vector is not None:
+        try:
+            vec = [float(x) for x in query_vector]
+        except Exception as exc:
+            logger.warning(f"[RAG] invalid query_vector provided: {exc}")
+    if vec is None:
+        if not query:
+            logger.info("[RAG] no query text to embed; retrieval skipped")
+            return []
+        vec = _embed_query(query, api_key, model=primary_model)
+        if not vec:
+            logger.info("[RAG] embedding failed; retrieval skipped")
+            return []
+
     conn = _connect_knowledge()
     if not conn:
         logger.info("[RAG] no knowledge DB connection; retrieval skipped")
@@ -136,21 +185,33 @@ def retrieve_topk(
         try:
             if os.getenv("RAG_ENSURE_INDEX", "true").lower() == "true" and tbl not in _OPTIMIZED_TABLES:
                 with conn.cursor() as _cur:
-                    ops = os.getenv("RAG_INDEX_OPS", "vector_l2_ops")
-                    _cur.execute(
-                        f"CREATE INDEX IF NOT EXISTS \"{tbl}_embedding_idx\" ON public.\"{tbl}\" USING ivfflat (embedding {ops})"
-                    )
+                    ops = os.getenv("RAG_INDEX_OPS", "vector_cosine_ops")
+                    try:
+                        _cur.execute(
+                            f"DROP INDEX IF EXISTS \"{tbl}_embedding_idx\""
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        _cur.execute(
+                            f"CREATE INDEX \"{tbl}_embedding_idx\" ON public.\"{tbl}\" USING ivfflat (embedding {ops})"
+                        )
+                    except Exception:
+                        pass
                     if os.getenv("RAG_ANALYZE", "true").lower() == "true":
-                        _cur.execute(f"ANALYZE public.\"{tbl}\"")
+                        try:
+                            _cur.execute(f"ANALYZE public.\"{tbl}\"")
+                        except Exception:
+                            pass
                 _OPTIMIZED_TABLES.add(tbl)
         except Exception as _e:  # pragma: no cover - permissions or races
             pass
         # Build vector string literal and bind as a parameter so psycopg2 quotes it
-        vec_str = "[" + ",".join(f"{x:.8f}" for x in vec) + "]"
+        vec_str = "[" + ",".join(f"{float(x):.8f}" for x in vec) + "]"
         sql = f"""
-            SELECT id, text, metadata, embedding <-> (%s)::vector AS score
+            SELECT id, text, metadata, embedding <=> (%s)::vector AS score
             FROM public."{tbl}"
-            ORDER BY embedding <-> (%s)::vector
+            ORDER BY embedding <=> (%s)::vector
             LIMIT %s
         """
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -178,34 +239,39 @@ def retrieve_topk(
         out = []
         for r in rows:
             md = r.get("metadata")
-            out.append({
-                "id": r.get("id"),
-                "text": r.get("text"),
-                "metadata": md,
-                "score": r.get("score"),
-            })
+            distance = r.get("score")
+            similarity = _distance_to_similarity(distance)
+            out.append(
+                {
+                    "id": r.get("id"),
+                    "text": r.get("text"),
+                    "metadata": md,
+                    "score": distance,
+                    "similarity": similarity,
+                }
+            )
         return out
     except Exception as e:
         msg = str(e)
         logger.warning(f"[RAG] retrieval failed for table {tbl}: {msg}")
         # Auto-retry with alternate model on vector dimension mismatch (e.g., 3072 vs 1536)
-        if "different vector dimensions" in msg or "vector dimensions" in msg:
+        if ("different vector dimensions" in msg or "vector dimensions" in msg) and query:
             # Ensure the connection is usable before retrying
             try:
                 conn.rollback()
             except Exception:
                 pass
-            alt = "text-embedding-3-large" if primary_model != "text-embedding-3-large" else "text-embedding-3-small"
+            alt = "text-embedding-3-small" if primary_model == "text-embedding-3-large" else "text-embedding-3-large"
             logger.info(f"[RAG] retrying with alternate embedding model: {alt}")
             vec = _embed_query(query, api_key, model=alt)
             if not vec:
                 return []
             try:
-                vec_str = "[" + ",".join(f"{x:.8f}" for x in vec) + "]"
+                vec_str = "[" + ",".join(f"{float(x):.8f}" for x in vec) + "]"
                 sql = f"""
-                    SELECT id, text, metadata, embedding <-> (%s)::vector AS score
+                    SELECT id, text, metadata, embedding <=> (%s)::vector AS score
                     FROM public."{tbl}"
-                    ORDER BY embedding <-> (%s)::vector
+                    ORDER BY embedding <=> (%s)::vector
                     LIMIT %s
                 """
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -230,12 +296,17 @@ def retrieve_topk(
                 out = []
                 for r in rows:
                     md = r.get("metadata")
-                    out.append({
-                        "id": r.get("id"),
-                        "text": r.get("text"),
-                        "metadata": md,
-                        "score": r.get("score"),
-                    })
+                    distance = r.get("score")
+                    similarity = _distance_to_similarity(distance)
+                    out.append(
+                        {
+                            "id": r.get("id"),
+                            "text": r.get("text"),
+                            "metadata": md,
+                            "score": distance,
+                            "similarity": similarity,
+                        }
+                    )
                 return out
             except Exception as e2:
                 logger.warning(f"[RAG] retry retrieval failed: {e2}")

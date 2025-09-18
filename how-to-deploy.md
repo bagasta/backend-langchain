@@ -13,6 +13,12 @@ This guide sets up Uvicorn as a managed service that starts on boot and restarts
 - Repo dir: `/root/backend-langchain` (adjust paths as needed)
 - Venv: `/root/backend-langchain/.venv`
 - Ensure `.env` exists at repo root with your DB and API settings; the app loads it automatically (see `main.py`).
+- Install Node.js (if needed):
+  - Quick: `sudo apt-get update && sudo apt-get install -y nodejs npm`
+  - Recommended (Node 18 LTS):
+    - `curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -`
+    - `sudo apt-get install -y nodejs`
+  - Verify: `node -v && npm -v`
 - Install Prisma deps and apply migrations (one-time):
   - `cd /root/backend-langchain/database/prisma && npm ci --no-audit --no-fund`
   - `cd /root/backend-langchain`
@@ -26,16 +32,20 @@ This guide sets up Uvicorn as a managed service that starts on boot and restarts
 
 **2) Create a systemd service**
 - File: `/etc/systemd/system/langchain.service`
-- Contents (adjust paths/port; uses port 8000):
+- Contents (adjust paths/port; uses port 8001):
   [Unit]
   Description=LangChain Backend (Uvicorn)
   After=network.target
 
   [Service]
   WorkingDirectory=/root/backend-langchain
-  Environment=PATH=/root/backend-langchain/.venv/bin
+  # Ensure Node is visible for Prisma helper
+  Environment=PATH=/root/backend-langchain/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
   Environment=PRISMA_CMD_TIMEOUT=15
-  ExecStart=/root/backend-langchain/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --workers 2 --proxy-headers --log-level info
+  # Optional explicit Node binary if PATH is constrained
+  # Environment=NODE_BIN=/usr/bin/node
+  # Environment=NPX_BIN=/usr/bin/npx
+  ExecStart=/root/backend-langchain/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8001 --workers 2 --proxy-headers --log-level info
   Restart=always
   RestartSec=5
 
@@ -52,9 +62,7 @@ This guide sets up Uvicorn as a managed service that starts on boot and restarts
 - Install:
   - `sudo apt-get update && sudo apt-get install -y nginx`
 - Site file: `/etc/nginx/sites-available/langchain.conf`
-- Contents:
-  upstream langchain_app { server 127.0.0.1:8000; }
-
+- Contents (proxy directly to 127.0.0.1:8001):
   server {
     listen 80;
     listen [::]:80;
@@ -74,7 +82,7 @@ This guide sets up Uvicorn as a managed service that starts on boot and restarts
     client_max_body_size 16m;
 
     location / {
-      proxy_pass http://langchain_app;
+      proxy_pass http://127.0.0.1:8001;
       proxy_http_version 1.1;
       proxy_set_header Host $host;
       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -110,12 +118,14 @@ This guide sets up Uvicorn as a managed service that starts on boot and restarts
 - App:
   - `sudo systemctl status langchain --no-pager`
   - `sudo journalctl -u langchain -f`
-  - `curl -I http://127.0.0.1:8000/`
+  - `curl -I http://127.0.0.1:8001/`
+  - `curl -I http://127.0.0.1:8001/healthz`
 - Nginx:
   - `sudo nginx -t`
   - `sudo systemctl reload nginx`
   - `sudo tail -f /var/log/nginx/error.log`
-- If you get 500s on `/api_keys/generate`, check DB/migrations:
+- If you get 500s on `/api_keys/generate`, check DB/migrations and Node PATH:
+  - Ensure Node is installed and visible to the service: `which node` and set `Environment=NODE_BIN=/usr/bin/node` in the unit if needed.
   - `npx prisma migrate status --schema database/prisma/schema.prisma`
   - `node database/prisma/agent_service.js ensure_user <<< '{"email":"admin@example.com"}'`
   - `node database/prisma/agent_service.js apikey_create <<< '{"user_id":"<ID>","label":"server","ttl_days":365}'`
@@ -131,6 +141,6 @@ This guide sets up Uvicorn as a managed service that starts on boot and restarts
 
 **Notes**
 - Keep `.env` at the repo root; `load_dotenv()` reads it at startup.
-- If you prefer port 8001, change `ExecStart` and `upstream` to `127.0.0.1:8001` in both systemd and Nginx.
+- Default port in this guide is 8001. Keep Nginx and the service in sync if you change it.
+- Health endpoints: `/` and `/healthz` support GET/HEAD (200 OK).
 - Remove duplicate Nginx `server_name` entries to avoid conflicts.
-

@@ -52,8 +52,8 @@ Notes
   - npx prisma migrate resolve --schema database/prisma/schema.prisma --rolled-back 20250901000000_add_agent_fields
   - npx prisma migrate resolve --schema database/prisma/schema.prisma --rolled-back 20250901000001_add_memory_backend
 - Apply current migrations (idempotent; create snake_case tables if missing):
-  - npx prisma migrate deploy --schema database/prisma/schema.prisma
-  - npx prisma generate --schema database/prisma/schema.prisma
+ - npx prisma migrate deploy --schema database/prisma/schema.prisma
+ - npx prisma generate --schema database/prisma/schema.prisma
 
 The relevant schema for tables is in `database/prisma/schema.prisma`. The code paths that depend on these tables are in `database/prisma/agent_service.js` and `database/client.py`.
 
@@ -64,7 +64,8 @@ The relevant schema for tables is in `database/prisma/schema.prisma`. The code p
 
 7) Test the API
 - Health check:
-  - curl -sS http://localhost:8000/
+  - curl -i http://localhost:8000/
+  - curl -i http://localhost:8000/healthz
 - Generate an API key (bootstrap auth via header):
   - curl -sS -X POST http://localhost:8000/api_keys/generate \
     -H 'X-API-Key: bootstrap-123' \
@@ -83,6 +84,7 @@ Troubleshooting
   - Re-run Prisma steps above (status/resolve/deploy). Ensure tables `public.users`, `public.agent`, `public.list_account`, and `public.api_key` exist.
   - Permissions: the DB role must INSERT/SELECT on `public.users` and `public.api_key`.
   - Slow remote DB: increase `PRISMA_CMD_TIMEOUT` (e.g., 15-30).
+  - If running under systemd, ensure Node is installed and visible to the service; set `NODE_BIN=/usr/bin/node` in the unit if needed.
 - Directly test the Prisma helper (helpful error messages):
   - Ensure user: `node database/prisma/agent_service.js ensure_user <<< '{"email":"admin@example.com"}'`
   - Create key: `node database/prisma/agent_service.js apikey_create <<< '{"user_id":"<ID>","label":"server","ttl_days":365}'`
@@ -92,4 +94,4 @@ Troubleshooting
 Production notes
 - Use a process supervisor (systemd) to run Uvicorn as a service.
 - Keep your `.env` secure and rotate the bootstrap key in `API_KEYS` after you’ve created per-user keys.
-
+ - Health endpoints: `/` and `/healthz` support GET/HEAD, useful for load balancers and uptime checks.

@@ -6,7 +6,7 @@ from uuid import uuid4
 from config.schema import AgentConfig
 from agents.builder import build_agent
 from database.client import get_agent_owner_id
-from agents.rag import retrieve_topk, format_context
+from agents.rag import retrieve_topk, format_context, embed_text
 from agents.memory import persist_conversation
 import json
 from langchain_openai import ChatOpenAI
@@ -77,11 +77,24 @@ def run_custom_agent(
             use_rag = os.getenv("RAG_ENABLED", "true").lower() == "true"
             if rag_enable is not None:
                 use_rag = bool(rag_enable)
-            snippets = retrieve_topk(user_id, agent_id, message, top_k=top_k, api_key=config.openai_api_key) if use_rag else []
+            snippets: list[dict] = []
+            if use_rag:
+                query_vector = embed_text(message, api_key=config.openai_api_key)
+                if query_vector:
+                    snippets = retrieve_topk(
+                        user_id,
+                        agent_id,
+                        message,
+                        top_k=top_k,
+                        api_key=config.openai_api_key,
+                        query_vector=query_vector,
+                    )
+                else:
+                    print(f"[RAG] embedding unavailable for agent={agent_id}, skipping context")
             if snippets:
                 ctx = format_context(snippets)
                 # Build neat, readable log with scores and snippet previews
-                scores = []
+                similarities = []
                 previews = []
                 max_chars = 200
                 try:
@@ -89,21 +102,30 @@ def run_custom_agent(
                 except Exception:
                     pass
                 for i, s in enumerate(snippets, start=1):
-                    # Score list
+                    # Similarity list (0-1)
+                    similarity = None
                     try:
-                        scores.append(f"{float(s.get('score')):.4f}")
+                        similarity = s.get("similarity")
+                        if similarity is None and s.get("score") is not None:
+                            similarity = 1 - float(s.get("score"))
+                        if similarity is not None:
+                            similarities.append(f"{float(similarity):.4f}")
+                        else:
+                            similarities.append("?")
                     except Exception:
-                        scores.append("?")
+                        similarities.append("?")
                     # Snippet preview line
                     try:
                         tx = (s.get("text") or "").strip()
                         if len(tx) > max_chars:
                             tx = tx[:max_chars] + "..."
-                        sc = s.get("score")
-                        sc_s = f"{float(sc):.4f}" if sc is not None else "?"
-                        previews.append(f"  [{i}] score={sc_s} text=\"{tx}\"")
+                        similarity = s.get("similarity")
+                        if similarity is None and s.get("score") is not None:
+                            similarity = 1 - float(s.get("score"))
+                        sim_s = f"{float(similarity):.4f}" if similarity is not None else "?"
+                        previews.append(f"  [{i}] similarity={sim_s} text=\"{tx}\"")
                     except Exception:
-                        previews.append(f"  [{i}] score=? text=<unavailable>")
+                        previews.append(f"  [{i}] similarity=? text=<unavailable>")
 
                 # Prepend context to system_message
                 new_cfg = config.model_copy(deep=True)
@@ -114,7 +136,7 @@ def run_custom_agent(
                 lines = []
                 lines.append("[RAG] ===== Context Injection =====")
                 lines.append(f"[RAG] Agent={agent_id} User={user_id} Snippets={len(snippets)}")
-                lines.append(f"[RAG] Scores: {', '.join(scores)}")
+                lines.append(f"[RAG] Similarities: {', '.join(similarities)}")
                 if os.getenv("RAG_LOG_CONTEXT", "true").lower() == "true":
                     lines.append("[RAG] Snippet previews:")
                     for p in previews:

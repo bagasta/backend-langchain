@@ -2,6 +2,7 @@ import os
 import json
 import subprocess
 import logging
+import shutil
 from pathlib import Path
 import time
 
@@ -25,9 +26,34 @@ _AGENT_CACHE: dict[str, tuple[AgentConfig, float]] = {}
 _OWNER_CACHE: dict[str, str] = {}
 _LOGGER = logging.getLogger("db.client")
 
-# Binaries: allow overriding via env for systemd environments
-NODE_BIN = os.getenv("NODE_BIN", "node")
-NPX_BIN = os.getenv("NPX_BIN", "npx")
+# Binaries: allow overriding via env for systemd environments, with sane fallbacks
+def _resolve_bin(name: str, candidates: list[str]) -> str:
+    # 1) explicit env override
+    override = os.getenv(f"{name.upper()}_BIN")
+    if override:
+        return override
+    # 2) found on PATH
+    found = shutil.which(name)
+    if found:
+        return found
+    # 3) common absolute paths
+    for c in candidates:
+        if os.path.exists(c) and os.access(c, os.X_OK):
+            return c
+    # 4) fall back to the name; will raise FileNotFoundError later with helpful msg
+    return name
+
+NODE_BIN = _resolve_bin("node", [
+    "/usr/bin/node",
+    "/usr/local/bin/node",
+    "/bin/node",
+    "/usr/bin/nodejs",
+])
+NPX_BIN = _resolve_bin("npx", [
+    "/usr/bin/npx",
+    "/usr/local/bin/npx",
+    "/bin/npx",
+])
 
 
 def _with_connect_timeout(url: str, default_seconds: int = 3) -> str:
@@ -163,7 +189,7 @@ def _run(command: str, payload: dict) -> dict:
         )
     except FileNotFoundError as exc:
         raise RuntimeError(
-            "Node.js binary not found. Install Node.js and ensure the service PATH includes it, "
+            f"Node.js binary not found (attempted: {NODE_BIN}). Install Node.js and ensure the service PATH includes it, "
             "or set NODE_BIN to the absolute node path (e.g., /usr/bin/node)."
         ) from exc
     except subprocess.TimeoutExpired as exc:

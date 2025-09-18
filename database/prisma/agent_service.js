@@ -94,10 +94,11 @@ async function createKnowledgeTable(userId, agentId) {
           embedding vector(3072)
         )`
       );
-      // Best-effort: add ANN index for faster similarity search
+      // Best-effort: clean up legacy L2 index and replace with cosine variant
+      try { await kp.$executeRawUnsafe(`DROP INDEX IF EXISTS "${tableName}_embedding_idx"`); } catch {}
       try {
         await kp.$executeRawUnsafe(
-          `CREATE INDEX IF NOT EXISTS "${tableName}_embedding_idx" ON public."${tableName}" USING ivfflat (embedding vector_l2_ops)`
+          `CREATE INDEX "${tableName}_embedding_idx" ON public."${tableName}" USING ivfflat (embedding vector_cosine_ops)`
         );
       } catch {}
     } catch (_e) {
@@ -109,9 +110,10 @@ async function createKnowledgeTable(userId, agentId) {
           embedding vector(3072)
         )`
       );
+      try { await kp.$executeRawUnsafe(`DROP INDEX IF EXISTS "${tableName}_embedding_idx"`); } catch {}
       try {
         await kp.$executeRawUnsafe(
-          `CREATE INDEX IF NOT EXISTS "${tableName}_embedding_idx" ON public."${tableName}" USING ivfflat (embedding vector_l2_ops)`
+          `CREATE INDEX "${tableName}_embedding_idx" ON public."${tableName}" USING ivfflat (embedding vector_cosine_ops)`
         );
       } catch {}
     }

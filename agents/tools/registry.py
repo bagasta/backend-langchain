@@ -522,24 +522,47 @@ def get_auth_urls(names: list[str], state: str | None = None) -> dict[str, str]:
 
     # Detect any Google providers among the requested tools
     lower = {n.lower() for n in final_names}
+    doc_tool_names = {"google_docs", "docs", "docs_create", "docs_get", "docs_append", "docs_export_pdf"}
     google_related = any(
-        (n.startswith("gmail")) or (n.startswith("google_gmail")) or (n in _CALENDAR_TOOL_NAMES) or (n in {"google_docs", "docs", "docs_create", "docs_get", "docs_append", "docs_export_pdf"})
+        (n.startswith("gmail"))
+        or (n.startswith("google_gmail"))
+        or (n in _CALENDAR_TOOL_NAMES)
+        or (n in doc_tool_names)
         for n in lower
     )
 
+    unified_url: str | None = None
     if google_related:
-        unified = _build_unified_google_oauth_url(state=state)
-        if unified:
-            urls["google"] = unified
+        unified_url = _build_unified_google_oauth_url(state=state)
+        if unified_url:
+            urls["google"] = unified_url
 
-    # Preserve other providers (non-Google) if any are added later
+    # Preserve provider-specific URLs whenever a unified Google URL
+    # is unavailable. This ensures existing integrations keep working
+    # even if only Gmail-specific environment variables are configured.
     for name in final_names:
         name_lower = name.lower()
-        if name_lower.startswith("gmail") or name_lower.startswith("google_gmail") or (name_lower in _CALENDAR_TOOL_NAMES) or (name_lower in {"google_docs", "docs", "docs_create", "docs_get", "docs_append", "docs_export_pdf"}):
+        is_google_provider = (
+            name_lower.startswith("gmail")
+            or name_lower.startswith("google_gmail")
+            or (name_lower in _CALENDAR_TOOL_NAMES)
+            or (name_lower in doc_tool_names)
+        )
+
+        # Skip per-provider URLs only when a unified Google URL was generated.
+        if is_google_provider and unified_url:
             continue
+
         builder = AUTH_URL_BUILDERS.get(name) or AUTH_URL_BUILDERS.get(name_lower)
         if builder:
             url = builder(state=state)
             if url:
-                urls.setdefault(name_lower, url)
+                key = name_lower
+                if name_lower.startswith("gmail") or name_lower.startswith("google_gmail"):
+                    key = "gmail"
+                elif name_lower in _CALENDAR_TOOL_NAMES:
+                    key = "google_calendar"
+                elif name_lower in doc_tool_names:
+                    key = "google_docs"
+                urls.setdefault(key, url)
     return urls

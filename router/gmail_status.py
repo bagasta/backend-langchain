@@ -4,8 +4,12 @@ from typing import Optional, List
 import os
 import json
 
-from google.auth.transport.requests import Request as GARequest
-from google.auth.transport.requests import AuthorizedSession
+try:
+    from google.auth.transport.requests import Request as GARequest
+    from google.auth.transport.requests import AuthorizedSession
+except Exception:  # pragma: no cover - optional dependency
+    GARequest = None  # type: ignore
+    AuthorizedSession = None  # type: ignore
 
 try:
     from google.oauth2.credentials import Credentials
@@ -90,7 +94,7 @@ def gmail_status():
     profile_ok = False
     error: Optional[str] = None
 
-    if Credentials and token_exists:
+    if Credentials and GARequest and token_exists:
         try:
             creds = Credentials.from_authorized_user_file(token_path, scopes=scopes_cfg)
             if not creds.valid and creds.refresh_token:
@@ -111,6 +115,8 @@ def gmail_status():
                     # Try REST fallback if discovery build fails
                     error = f"service build failed: {e}"
                     try:
+                        if AuthorizedSession is None:
+                            raise RuntimeError("google-auth transport not available")
                         authed = AuthorizedSession(creds)
                         timeout = float(os.getenv("GMAIL_HTTP_TIMEOUT", "20"))
                         r = authed.get("https://gmail.googleapis.com/gmail/v1/users/me/profile", timeout=timeout)
@@ -125,7 +131,7 @@ def gmail_status():
         except Exception as e:
             error = f"credentials load/refresh failed: {e}"
     else:
-        if not Credentials:
+        if not Credentials or not GARequest:
             error = "google-auth not available"
         elif not token_exists:
             error = "token.json not found"
@@ -176,7 +182,7 @@ def gmail_dry_send(payload: DrySendRequest):
 
     if not os.path.exists(token_path):
         raise HTTPException(status_code=400, detail="token.json not found; authorize first")
-    if not Credentials:
+    if not Credentials or not GARequest or not AuthorizedSession:
         raise HTTPException(status_code=500, detail="google-auth not available")
 
     try:
@@ -233,7 +239,7 @@ def gmail_send(payload: SendRequest):
 
     if not os.path.exists(token_path):
         raise HTTPException(status_code=400, detail="token.json not found; authorize first")
-    if not Credentials:
+    if not Credentials or not GARequest or not AuthorizedSession:
         raise HTTPException(status_code=500, detail="google-auth not available")
 
     try:

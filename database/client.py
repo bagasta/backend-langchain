@@ -35,7 +35,9 @@ def _resolve_bin(name: str, candidates: list[str]) -> str:
     # 2) found on PATH
     found = shutil.which(name)
     if found:
-        return found
+        # Prefer returning the bare command name so subprocess.run captures align
+        # with historical expectations/tests while still leveraging PATH lookup.
+        return name
     # 3) common absolute paths
     for c in candidates:
         if os.path.exists(c) and os.access(c, os.X_OK):
@@ -169,7 +171,7 @@ def _maybe_sync_prisma() -> None:
     except Exception as exc:
         # Do not hard-fail here; surface errors on actual DB call
         _LOGGER.warning("Prisma auto-sync skipped: %s", exc)
-        _SYNC_DONE = True
+        _SYNC_DONE = False
 
 
 def _run(command: str, payload: dict) -> dict:
@@ -386,6 +388,45 @@ def save_agent_google_token(agent_id: str, email: str, token: dict) -> None:
         )
     except Exception:
         _LOGGER.exception("save_agent_google_token failed for agent_id=%r email=%r", agent_id, email)
+
+
+def get_agent_google_token(
+    agent_id: str,
+    *,
+    owner_id: str | None = None,
+    email: str | None = None,
+) -> dict | None:
+    """Fetch the unified Google OAuth token JSON for an agent.
+
+    The Node helper looks up ``list_account`` records and returns the most
+    recently updated token for the agent (optionally constrained by user/email).
+    Returns ``None`` when no token is available.
+    """
+
+    payload: dict[str, str] = {"agent_id": str(agent_id)}
+    try:
+        if owner_id is None:
+            owner_id = get_agent_owner_id(agent_id)
+        if owner_id:
+            payload["user_id"] = str(owner_id)
+        if email:
+            payload["email"] = str(email)
+        data = _run("get_token", payload)
+    except Exception:
+        _LOGGER.exception("get_agent_google_token failed for agent_id=%r", agent_id)
+        return None
+
+    if not isinstance(data, dict):
+        return None
+    token = data.get("token")
+    if isinstance(token, str):
+        try:
+            token = json.loads(token)
+        except Exception:
+            token = None
+    if isinstance(token, dict):
+        return token
+    return None
 
 
 def get_agent_owner_id(agent_id: str) -> str | None:

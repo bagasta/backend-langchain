@@ -37,7 +37,7 @@ def _cache_key(cfg: AgentConfig, api_key: str) -> str:
 load_dotenv()
 
 
-def build_agent(config: AgentConfig):
+def build_agent(config: AgentConfig, agent_id: str | None = None):
     """Construct a LangChain agent executor from the provided configuration."""
 
     # 1. Initialize LLM with provided or environment API key
@@ -69,7 +69,7 @@ def build_agent(config: AgentConfig):
         ) from exc
 
     # 2. Gather tools from registry
-    tools = get_tools_by_names(config.tools)
+    tools = get_tools_by_names(config.tools, agent_id=agent_id)
 
     # 2b. Light guidance to encourage tool usage (prevents model refusals)
     tool_names = [getattr(t, "name", "") for t in tools]

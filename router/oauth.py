@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 import os
 import json
+from pathlib import Path
 from typing import Optional
 from database.client import save_agent_google_token
 
@@ -118,6 +119,38 @@ async def gmail_oauth_callback(request: Request):
             f.write(credentials.to_json())
     except Exception as exc:  # pragma: no cover - filesystem errors
         raise HTTPException(status_code=500, detail=f"Saving token failed: {exc}")
+
+    if state:
+        try:
+            agent_root = os.getenv("GOOGLE_AGENT_CREDENTIALS_DIR")
+            if not agent_root:
+                agent_root = os.path.join(os.getcwd(), ".credentials", "google")
+            agent_dir = Path(agent_root) / state
+            agent_dir.mkdir(parents=True, exist_ok=True)
+            (agent_dir / "token.json").write_text(credentials.to_json())
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Saving agent token failed: {exc}")
+
+    if state:
+        email_for_store: Optional[str] = None
+        try:
+            from google.auth.transport.requests import AuthorizedSession  # type: ignore
+
+            authed = AuthorizedSession(credentials)
+            r = authed.get("https://gmail.googleapis.com/gmail/v1/users/me/profile", timeout=10)
+            if r.ok:
+                profile = r.json()
+                email_for_store = profile.get("emailAddress")
+        except Exception:
+            pass
+        try:
+            save_agent_google_token(
+                agent_id=state,
+                email=email_for_store or "unknown@googleuser.local",
+                token=json.loads(credentials.to_json()),
+            )
+        except Exception:
+            pass
 
     # Attempt to hot-reload Gmail tools (optional; can be slow). Enable with OAUTH_HOT_RELOAD=true
     if os.getenv("OAUTH_HOT_RELOAD", "false").lower() == "true":
@@ -389,6 +422,20 @@ async def google_oauth_callback(request: Request):
             written_paths.append(dtok)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Saving Docs token failed: {exc}")
+
+    agent_token_path: Path | None = None
+    if state:
+        try:
+            agent_root = os.getenv("GOOGLE_AGENT_CREDENTIALS_DIR")
+            if not agent_root:
+                agent_root = os.path.join(os.getcwd(), ".credentials", "google")
+            agent_dir = Path(agent_root) / state
+            agent_dir.mkdir(parents=True, exist_ok=True)
+            agent_token_path = agent_dir / "token.json"
+            agent_token_path.write_text(credentials.to_json())
+            written_paths.append(str(agent_token_path))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Saving agent token failed: {exc}")
 
     # Persist a unified token per agent (list_account) if state carries agent_id
     # Try to obtain the Google account email via Gmail profile when scopes allow

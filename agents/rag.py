@@ -3,8 +3,12 @@ import logging
 import time
 from typing import List, Optional, Any, Sequence, Tuple
 
-import psycopg2
-from psycopg2.extras import RealDictCursor
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+except Exception:  # pragma: no cover - optional dependency
+    psycopg2 = None  # type: ignore
+    RealDictCursor = None  # type: ignore
 
 try:
     from langchain_openai import OpenAIEmbeddings
@@ -53,6 +57,8 @@ _KNOWLEDGE_CONN = None
 def _connect_knowledge() -> Optional[Any]:
     url = _derive_knowledge_url()
     if not url:
+        return None
+    if psycopg2 is None:
         return None
     try:
         global _KNOWLEDGE_CONN

@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Optional, Literal, Any, Dict, List
+from typing import Optional, Literal, Any, Dict, List, Tuple
 from urllib.parse import urlencode
+
+from utils.google_oauth import ensure_agent_token_file
 
 # Import LangChain tool types
 try:
@@ -49,6 +51,7 @@ _candidate_tokens = [
     os.path.join(os.getcwd(), "token.json"),
 ]
 TOKEN_PATH = next((p for p in _candidate_tokens if p and os.path.exists(p)), _candidate_tokens[1])
+DEFAULT_TOKEN_PATH = TOKEN_PATH
 
 # Client secrets path resolution
 _candidate_secrets = [
@@ -73,6 +76,13 @@ SCOPES = [
 ]
 
 
+def _resolve_token_for_agent(agent_id: Optional[str]) -> Tuple[Optional[str], bool]:
+    """Return the token path for an agent (or the legacy shared file)."""
+
+    return ensure_agent_token_file(agent_id, DEFAULT_TOKEN_PATH)
+
+
+# -----------------------------
 # -----------------------------
 # Pydantic Models for Tool Arguments
 # -----------------------------
@@ -156,11 +166,21 @@ class GmailUnifiedArgs(BaseModel):
 # -----------------------------
 # Initialize Gmail Service
 # -----------------------------
-def initialize_gmail_service():
+def initialize_gmail_service(agent_id: Optional[str] = None):
     """Initialize Gmail service with proper error handling."""
     service = None
     error_messages = []
-    
+
+    token_path, _ = _resolve_token_for_agent(agent_id)
+    if not token_path:
+        who = f" for agent {agent_id}" if agent_id else ""
+        error_messages.append(
+            "Gmail OAuth token not found"
+            + who
+            + ". Please authorize via the Gmail OAuth flow first."
+        )
+        return None, error_messages
+
     try:
         # Try new package first
         try:
@@ -179,19 +199,19 @@ def initialize_gmail_service():
         missing_files = []
         if not os.path.exists(CLIENT_SECRETS_PATH):
             missing_files.append(f"Client secrets at {CLIENT_SECRETS_PATH}")
-        if not os.path.exists(TOKEN_PATH):
-            missing_files.append(f"Token at {TOKEN_PATH}")
-        
+        if not os.path.exists(token_path):
+            missing_files.append(f"Token at {token_path}")
+
         if missing_files:
             raise FileNotFoundError(
                 f"Missing Gmail OAuth files: {', '.join(missing_files)}. "
                 f"Please set GMAIL_CLIENT_SECRETS_PATH and GMAIL_TOKEN_PATH, "
                 f"or place files in {CREDS_DIR}"
             )
-        
+
         # Get credentials
         creds = get_gmail_credentials(
-            token_file=TOKEN_PATH,
+            token_file=token_path,
             client_secrets_file=CLIENT_SECRETS_PATH,
             scopes=SCOPES,
         )
@@ -287,21 +307,32 @@ def format_message_data(message_data: dict) -> dict:
 # -----------------------------
 # Tool Implementation Functions
 # -----------------------------
-def gmail_search_messages(query: str, max_results: int = 10) -> str:
+def gmail_search_messages(
+    query: str,
+    max_results: int = 10,
+    *,
+    agent_id: Optional[str] = None,
+) -> str:
     """
     Search Gmail messages.
     This function ONLY searches and returns message metadata.
     """
-    service, errors = initialize_gmail_service()
+    service, errors = initialize_gmail_service(agent_id=agent_id)
     if not service:
         # Try REST fallback
         try:
             from google.oauth2.credentials import Credentials
             from google.auth.transport.requests import AuthorizedSession, Request as GARequest
         except Exception:
-            return f"Gmail service unavailable: {'; '.join(errors)}"
+            return f"Gmail tool unavailable: {'; '.join(errors)}"
         try:
-            creds = Credentials.from_authorized_user_file(TOKEN_PATH, scopes=SCOPES)
+            token_path, _ = _resolve_token_for_agent(agent_id)
+            if not token_path:
+                return (
+                    "Gmail tool unavailable: missing OAuth token. "
+                    "Please authorize this agent via the Gmail OAuth flow."
+                )
+            creds = Credentials.from_authorized_user_file(token_path, scopes=SCOPES)
             if not creds.valid and getattr(creds, 'refresh_token', None):
                 creds.refresh(GARequest())
             authed = AuthorizedSession(creds)
@@ -350,7 +381,7 @@ def gmail_search_messages(query: str, max_results: int = 10) -> str:
                 indent=2,
             )
         except Exception as e:
-            return f"Gmail service unavailable: {'; '.join(errors)}"
+            return f"Gmail tool unavailable: {'; '.join(errors)}"
     
     try:
         # Search messages
@@ -402,23 +433,31 @@ def gmail_search_messages(query: str, max_results: int = 10) -> str:
 def gmail_read_messages(
     query: Optional[str] = "is:unread",
     max_results: int = 5,
-    mark_as_read: bool = False
+    mark_as_read: bool = False,
+    *,
+    agent_id: Optional[str] = None,
 ) -> str:
     """
     Read Gmail messages with full content.
     This function retrieves full message bodies.
     """
-    service, errors = initialize_gmail_service()
+    service, errors = initialize_gmail_service(agent_id=agent_id)
     if not service:
         # REST fallback
         try:
             from google.oauth2.credentials import Credentials
             from google.auth.transport.requests import AuthorizedSession, Request as GARequest
         except Exception:
-            return f"Gmail service unavailable: {'; '.join(errors)}"
+            return f"Gmail tool unavailable: {'; '.join(errors)}"
         try:
             search_query = query or "is:unread"
-            creds = Credentials.from_authorized_user_file(TOKEN_PATH, scopes=SCOPES)
+            token_path, _ = _resolve_token_for_agent(agent_id)
+            if not token_path:
+                return (
+                    "Gmail tool unavailable: missing OAuth token. "
+                    "Please authorize this agent via the Gmail OAuth flow."
+                )
+            creds = Credentials.from_authorized_user_file(token_path, scopes=SCOPES)
             if not creds.valid and getattr(creds, 'refresh_token', None):
                 creds.refresh(GARequest())
             authed = AuthorizedSession(creds)
@@ -460,7 +499,7 @@ def gmail_read_messages(
                 indent=2,
             )
         except Exception as e:
-            return f"Gmail service unavailable: {'; '.join(errors)}"
+            return f"Gmail tool unavailable: {'; '.join(errors)}"
     
     try:
         # Use default query if none provided
@@ -516,7 +555,9 @@ def gmail_send_message(
     to: str,
     subject: str,
     message: str,
-    is_html: bool = False
+    is_html: bool = False,
+    *,
+    agent_id: Optional[str] = None,
 ) -> str:
     """
     Send an email via Gmail.
@@ -526,7 +567,7 @@ def gmail_send_message(
     if os.getenv("GMAIL_DISABLE_SEND", "false").lower() == "true":
         return "Gmail send is disabled by server policy (GMAIL_DISABLE_SEND=true)"
     
-    service, errors = initialize_gmail_service()
+    service, errors = initialize_gmail_service(agent_id=agent_id)
     if not service:
         # REST fallback: construct MIME and POST to Gmail send endpoint
         try:
@@ -536,7 +577,7 @@ def gmail_send_message(
             from google.oauth2.credentials import Credentials
             from google.auth.transport.requests import AuthorizedSession, Request as GARequest
         except Exception:
-            return f"Gmail service unavailable: {'; '.join(errors)}"
+            return f"Gmail tool unavailable: {'; '.join(errors)}"
         try:
             # Create message
             if is_html:
@@ -554,7 +595,13 @@ def gmail_send_message(
 
             raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
 
-            creds = Credentials.from_authorized_user_file(TOKEN_PATH, scopes=SCOPES)
+            token_path, _ = _resolve_token_for_agent(agent_id)
+            if not token_path:
+                return (
+                    "Gmail tool unavailable: missing OAuth token. "
+                    "Please authorize this agent via the Gmail OAuth flow."
+                )
+            creds = Credentials.from_authorized_user_file(token_path, scopes=SCOPES)
             if not creds.valid and getattr(creds, 'refresh_token', None):
                 creds.refresh(GARequest())
             authed = AuthorizedSession(creds)
@@ -572,7 +619,7 @@ def gmail_send_message(
                 "id": data.get("id")
             }, ensure_ascii=False, indent=2)
         except Exception:
-            return f"Gmail service unavailable: {'; '.join(errors)}"
+            return f"Gmail tool unavailable: {'; '.join(errors)}"
     
     try:
         import base64
@@ -620,13 +667,18 @@ def gmail_send_message(
         return f"Gmail send failed: {str(e)}"
 
 
-def gmail_get_message(message_id: str, format: str = "full") -> str:
+def gmail_get_message(
+    message_id: str,
+    format: str = "full",
+    *,
+    agent_id: Optional[str] = None,
+) -> str:
     """
     Get a specific Gmail message by ID.
     """
-    service, errors = initialize_gmail_service()
+    service, errors = initialize_gmail_service(agent_id=agent_id)
     if not service:
-        return f"Gmail service unavailable: {'; '.join(errors)}"
+        return f"Gmail tool unavailable: {'; '.join(errors)}"
     
     try:
         # Get message
@@ -654,11 +706,6 @@ def gmail_get_message(message_id: str, format: str = "full") -> str:
         return f"Gmail get message failed: {str(e)}"
 
 
-# Small wrappers for StructuredTool to appease type checkers
-def _tool_gmail_get_message(message_id: str, format: str = "full", **kwargs) -> str:
-    return gmail_get_message(message_id=message_id, format=format)
-
-
 # -----------------------------
 # Create LangChain Tools
 # -----------------------------
@@ -673,28 +720,95 @@ def gmail_unified(
     is_html: bool = False,
     message_id: Optional[str] = None,
     format: Optional[str] = "full",
+    *,
+    agent_id: Optional[str] = None,
 ) -> str:
     """Unified dispatcher that routes to read/search/send/get."""
     a = (action or "").strip().lower()
     if a == "read":
-        return gmail_read_messages(query=(query or "is:unread"), max_results=max_results, mark_as_read=mark_as_read)
+        return gmail_read_messages(
+            query=(query or "is:unread"),
+            max_results=max_results,
+            mark_as_read=mark_as_read,
+            agent_id=agent_id,
+        )
     if a == "search":
-        return gmail_search_messages(query=(query or ""), max_results=max_results)
+        return gmail_search_messages(query=(query or ""), max_results=max_results, agent_id=agent_id)
     if a == "send":
         if not (to and subject and message):
             return "Gmail send failed: missing 'to', 'subject', or 'message'"
-        return gmail_send_message(to=to, subject=subject, message=message, is_html=is_html)
+        return gmail_send_message(
+            to=to,
+            subject=subject,
+            message=message,
+            is_html=is_html,
+            agent_id=agent_id,
+        )
     if a in ("get", "get_message", "message"):
         mid = message_id or (query or "").strip()
         if not mid:
             return "Gmail get_message failed: missing message_id"
-        return gmail_get_message(message_id=mid, format=(format or "full"))
+        return gmail_get_message(message_id=mid, format=(format or "full"), agent_id=agent_id)
     return "Gmail tool failed: unknown action (use read|search|send|get)"
 
 
-def create_gmail_tools():
+def create_gmail_tools(agent_id: Optional[str] = None):
     """Create and return Gmail tools for LangChain."""
     tools = []
+
+    def _search_impl(query: str, max_results: int = 10, **kwargs) -> str:
+        return gmail_search_messages(query=query, max_results=max_results, agent_id=agent_id)
+
+    def _read_impl(
+        query: str = "is:unread",
+        max_results: int = 5,
+        mark_as_read: bool = False,
+        **kwargs,
+    ) -> str:
+        return gmail_read_messages(
+            query=query,
+            max_results=max_results,
+            mark_as_read=mark_as_read,
+            agent_id=agent_id,
+        )
+
+    def _send_impl(to: str, subject: str, message: str, is_html: bool = False, **kwargs) -> str:
+        return gmail_send_message(
+            to=to,
+            subject=subject,
+            message=message,
+            is_html=is_html,
+            agent_id=agent_id,
+        )
+
+    def _get_impl(message_id: str, format: str = "full", **kwargs) -> str:
+        return gmail_get_message(message_id=message_id, format=format, agent_id=agent_id)
+
+    def _unified_impl(
+        action: str,
+        query: Optional[str] = None,
+        max_results: int = 5,
+        mark_as_read: bool = False,
+        to: Optional[str] = None,
+        subject: Optional[str] = None,
+        message: Optional[str] = None,
+        is_html: bool = False,
+        message_id: Optional[str] = None,
+        format: Optional[str] = "full",
+    ) -> str:
+        return gmail_unified(
+            action=action,
+            query=query,
+            max_results=max_results,
+            mark_as_read=mark_as_read,
+            to=to,
+            subject=subject,
+            message=message,
+            is_html=is_html,
+            message_id=message_id,
+            format=format,
+            agent_id=agent_id,
+        )
 
     # Search tool - ONLY for searching emails
     if StructuredTool:
@@ -706,16 +820,14 @@ def create_gmail_tools():
                 "This tool returns email metadata (subject, from, date, snippet) but NOT full content. "
                 "DO NOT use this tool to read email bodies."
             ),
-            func=lambda query, max_results=10, **kwargs: gmail_search_messages(
-                query=query, max_results=max_results
-            ),
+            func=_search_impl,
             args_schema=GmailSearchArgs,
         )
     else:
         gmail_search_tool = CoreTool(
             name="gmail_search",
             description="Search for emails in Gmail. Returns metadata only.",
-            func=lambda input_str: gmail_search_messages(query=input_str),
+            func=lambda input_str: gmail_search_messages(query=input_str, agent_id=agent_id),
         )
     tools.append(gmail_search_tool)
 
@@ -729,20 +841,19 @@ def create_gmail_tools():
                 "Can filter by query (e.g., 'is:unread', 'from:sender@email.com'). "
                 "This is the tool to use when you need to READ or VIEW email content."
             ),
-            func=lambda query="is:unread", max_results=5, mark_as_read=False, **kwargs: 
-                gmail_read_messages(query=query, max_results=max_results, mark_as_read=mark_as_read),
+            func=_read_impl,
             args_schema=GmailReadArgs,
         )
     else:
         gmail_read_tool = CoreTool(
             name="gmail_read_messages",
             description="Read email messages with full content from Gmail.",
-            func=lambda input_str: gmail_read_messages(),
+            func=lambda input_str: gmail_read_messages(agent_id=agent_id),
         )
     tools.append(gmail_read_tool)
 
     # Send tool - ONLY for sending emails
-    if StructuredTool:
+    if StructuredTool and agent_id is not None:
         gmail_send_tool = StructuredTool.from_function(
             name="gmail_send_message",
             description=(
@@ -751,8 +862,7 @@ def create_gmail_tools():
                 "DO NOT use this for reading, searching, or any other email operations. "
                 "This tool is EXCLUSIVELY for sending new emails."
             ),
-            func=lambda to, subject, message, is_html=False, **kwargs: 
-                gmail_send_message(to=to, subject=subject, message=message, is_html=is_html),
+            func=_send_impl,
             args_schema=GmailSendArgs,
             return_direct=True,  # Return immediately after sending
         )
@@ -760,7 +870,17 @@ def create_gmail_tools():
         gmail_send_tool = CoreTool(
             name="gmail_send_message",
             description="Send an email via Gmail. ONLY for sending, not reading.",
-            func=lambda input_str: "Please provide: to|subject|message",
+            return_direct=True,
+            func=lambda input_str, **kwargs: _send_impl(
+                to=kwargs.get("to"),
+                subject=kwargs.get("subject"),
+                message=(
+                    kwargs.get("message")
+                    if kwargs.get("message") is not None
+                    else (input_str if isinstance(input_str, str) else "")
+                ),
+                is_html=bool(kwargs.get("is_html")),
+            ),
         )
     tools.append(gmail_send_tool)
 
@@ -772,14 +892,14 @@ def create_gmail_tools():
                 "Get a specific email by its message ID. "
                 "Use this when you have a specific message ID and need its full details."
             ),
-            func=_tool_gmail_get_message,
+            func=_get_impl,
             args_schema=GmailGetMessageArgs,
         )
     else:
         gmail_get_tool = CoreTool(
             name="gmail_get_message",
             description="Get a specific email by message ID.",
-            func=lambda message_id: gmail_get_message(message_id=message_id),
+            func=lambda message_id: gmail_get_message(message_id=message_id, agent_id=agent_id),
         )
     tools.append(gmail_get_tool)
 
@@ -791,19 +911,7 @@ def create_gmail_tools():
                 "Unified Gmail tool. Use read/search for fetching data and summarization; get for a specific email by ID; "
                 "send ONLY when the user explicitly asks to send."
             ),
-            func=lambda action, query=None, max_results=5, mark_as_read=False, to=None, subject=None, message=None, is_html=False, message_id=None, format="full", **kwargs: 
-                gmail_unified(
-                    action=action,
-                    query=query,
-                    max_results=max_results,
-                    mark_as_read=mark_as_read,
-                    to=to,
-                    subject=subject,
-                    message=message,
-                    is_html=is_html,
-                    message_id=message_id,
-                    format=format,
-                ),
+            func=_unified_impl,
             args_schema=GmailUnifiedArgs,
         )
     else:

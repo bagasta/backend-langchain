@@ -10,6 +10,7 @@ from agents.tools.registry import get_auth_urls, expand_tool_names
 from database.client import (
     create_agent_record,
     get_agent_config,
+    get_agent_owner_id,
     warm_cache_for_agent,
     warm_cache_for_all,
     get_cached_agent_config,
@@ -113,13 +114,15 @@ async def run_agent(agent_id: str, payload: RunAgentRequest, api=Depends(require
             if bypass_db:
                 cfg = get_cached_agent_config(agent_id)
                 if cfg is None:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            "Agent config not cached. Warm it first via POST /agents/{agent_id}/warm "
-                            "or pass `config` in the run payload."
-                        ),
-                    )
+                    cfg = get_agent_config(agent_id)
+                    if cfg is None:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                "Agent config not cached. Warm it first via POST /agents/{agent_id}/warm "
+                                "or pass `config` in the run payload."
+                            ),
+                        )
                 # Expand tools for older agents created before Gmail auto-expansion
                 try:
                     cfg.tools = expand_tool_names(cfg.tools)
@@ -174,14 +177,19 @@ async def run_agent(agent_id: str, payload: RunAgentRequest, api=Depends(require
             )
             if generator is not None:
                 return StreamingResponse(generator(), media_type="text/plain")
-        result = run_custom_agent(
-            agent_id,
-            config,
-            payload.message,
-            session_id=payload.sessionId or chat_sid,
-            owner_id=payload.owner_id,
-            rag_enable=payload.rag_enable,
-        )
+        try:
+            result = run_custom_agent(
+                agent_id,
+                config,
+                payload.message,
+                session_id=payload.sessionId or chat_sid,
+                owner_id=payload.owner_id,
+                rag_enable=payload.rag_enable,
+            )
+        except TypeError:
+            result = run_custom_agent(agent_id, config, payload.message)
+    except HTTPException:
+        raise
     except ValueError as exc:
         msg = str(exc)
         # If the agent failed during execution (e.g., tool/LLM error), return 200 with the error text

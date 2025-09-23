@@ -7,6 +7,7 @@ from agents.tools.google_search import google_search_tool
 from agents.tools.gmail import (
     gmail_search_tool,
     gmail_send_message_tool,
+    gmail_read_messages,
     build_gmail_oauth_url,
 )
 from agents.tools.websearch import websearch_tool
@@ -49,6 +50,14 @@ def test_gmail_tools_fallback():
     assert "Gmail tool unavailable" in send_out
     assert re.fullmatch(r"[A-Za-z0-9_-]+", gmail_search_tool.name)
     assert re.fullmatch(r"[A-Za-z0-9_-]+", gmail_send_message_tool.name)
+
+
+def test_agent_specific_gmail_requires_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("GOOGLE_AGENT_CREDENTIALS_DIR", str(tmp_path / "google"))
+    monkeypatch.setattr("utils.google_oauth.get_agent_google_token", lambda agent_id: None)
+
+    result = gmail_read_messages(agent_id="new-agent")
+    assert "oauth" in result.lower() or "authorize" in result.lower()
 
 
 def test_build_gmail_oauth_url(monkeypatch, tmp_path):

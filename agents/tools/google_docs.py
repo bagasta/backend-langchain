@@ -25,9 +25,17 @@ import logging
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Any, Type
 
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request, AuthorizedSession
-from googleapiclient.discovery import build
+try:
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request, AuthorizedSession
+    from googleapiclient.discovery import build
+except Exception:  # pragma: no cover - optional dependency
+    Credentials = None  # type: ignore
+    Request = None  # type: ignore
+    AuthorizedSession = None  # type: ignore
+    build = None  # type: ignore
+
+from utils.google_oauth import ensure_agent_token_file
 
 try:
     from pydantic import BaseModel, Field
@@ -65,6 +73,7 @@ def _default_docs_dir() -> str:
 class DocsConfig:
     credentials_file: str = "credentials.json"
     token_file: str = ""
+    agent_id: Optional[str] = None
 
 
 class GoogleDocsClient:
@@ -87,9 +96,16 @@ class GoogleDocsClient:
         self._init_services()
 
     def _get_credentials(self) -> Credentials:
+        if Credentials is None or Request is None:
+            raise RuntimeError("Google client libraries not installed for Docs operations.")
         creds = None
-        if os.path.exists(self.config.token_file):
-            creds = Credentials.from_authorized_user_file(self.config.token_file, SCOPES)
+        fallback_token = self.config.token_file or os.path.join(_default_docs_dir(), "docs_token.json")
+        token_path, _ = ensure_agent_token_file(self.config.agent_id, fallback_token, filename="token.json")
+        token_file = token_path or fallback_token
+        self.config.token_file = token_file
+
+        if token_file and os.path.exists(token_file):
+            creds = Credentials.from_authorized_user_file(token_file, SCOPES)
             # Validate scopes
             have = set(creds.scopes or [])
             need = set(SCOPES)
@@ -101,8 +117,11 @@ class GoogleDocsClient:
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
             else:
+                who = f" for agent {self.config.agent_id}" if self.config.agent_id else ""
                 raise RuntimeError(
-                    "Google Docs OAuth token not found or invalid. Please authorize via the Docs OAuth URL."
+                    "Google Docs OAuth token not found or invalid"
+                    + who
+                    + f" at {token_file}. Please authorize via the Docs OAuth URL."
                 )
         return creds
 
@@ -334,8 +353,12 @@ class DocsUnifiedTool(BaseTool):
         return "Docs tool failed: unknown action (use create|get|append|export)"
 
 
-def initialize_docs_tools(credentials_file: str, token_file: Optional[str] = None) -> List[BaseTool]:
-    cfg = DocsConfig(credentials_file=credentials_file, token_file=(token_file or ""))
+def initialize_docs_tools(
+    credentials_file: str,
+    token_file: Optional[str] = None,
+    agent_id: Optional[str] = None,
+) -> List[BaseTool]:
+    cfg = DocsConfig(credentials_file=credentials_file, token_file=(token_file or ""), agent_id=agent_id)
     client = GoogleDocsClient(cfg)
     tools: List[BaseTool] = [
         DocsUnifiedTool(client=client),

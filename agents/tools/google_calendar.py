@@ -21,11 +21,21 @@ try:
 except Exception:  # pragma: no cover
     from pydantic.v1 import BaseModel, Field  # type: ignore
 
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request, AuthorizedSession
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
+try:
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request, AuthorizedSession
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from googleapiclient.discovery import build
+    from googleapiclient.errors import HttpError
+except Exception:  # pragma: no cover - optional dependency
+    Credentials = None  # type: ignore
+    Request = None  # type: ignore
+    AuthorizedSession = None  # type: ignore
+    InstalledAppFlow = None  # type: ignore
+    build = None  # type: ignore
+    HttpError = Exception  # type: ignore
+
+from utils.google_oauth import ensure_agent_token_file
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -61,6 +71,7 @@ class CalendarConfig:
     timezone: str = "Asia/Jakarta"
     max_results: int = 10
     default_reminder_minutes: int = 10
+    agent_id: Optional[str] = None
 
 
 class GoogleCalendarTools:
@@ -266,15 +277,22 @@ class GoogleCalendarTools:
     
     def _get_credentials(self) -> Credentials:
         """Get or refresh Google Calendar credentials
-        
+
         Returns:
             Credentials object for Google Calendar API
         """
+        if Credentials is None or Request is None:
+            raise RuntimeError("Google client libraries not installed for Calendar operations.")
         creds = None
-        
+
+        fallback_token = self.config.token_file or os.path.join(_default_calendar_dir(), "calendar_token.json")
+        token_path, _ = ensure_agent_token_file(self.config.agent_id, fallback_token, filename="token.json")
+        token_file = token_path or fallback_token
+        self.config.token_file = token_file
+
         # Load existing token
-        if os.path.exists(self.config.token_file):
-            creds = Credentials.from_authorized_user_file(self.config.token_file, SCOPES)
+        if token_file and os.path.exists(token_file):
+            creds = Credentials.from_authorized_user_file(token_file, SCOPES)
             # If token exists but scopes are insufficient, force re-auth (don't attempt to use Gmail token)
             try:
                 have_scopes = set(creds.scopes or [])
@@ -286,10 +304,10 @@ class GoogleCalendarTools:
             except Exception as scope_exc:
                 # Surface a clear error so the caller can prompt re-auth via OAuth URL
                 raise RuntimeError(
-                    f"Google Calendar token at {self.config.token_file} is not authorized for required scopes. "
+                    f"Google Calendar token at {token_file} is not authorized for required scopes. "
                     f"{scope_exc}. Please re-authorize via the Calendar OAuth link."
                 )
-        
+
         # Refresh or create new credentials
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
@@ -302,11 +320,13 @@ class GoogleCalendarTools:
                     raise FileNotFoundError(
                         f"Credentials file not found: {self.config.credentials_file}"
                     )
+                who = f" for agent {self.config.agent_id}" if self.config.agent_id else ""
                 raise RuntimeError(
-                    "Google Calendar OAuth token not found or invalid at "
-                    f"{self.config.token_file}. Please authorize via the Calendar OAuth URL and retry."
+                    "Google Calendar OAuth token not found or invalid"
+                    + who
+                    + f" at {token_file}. Please authorize via the Calendar OAuth URL and retry."
                 )
-        
+
         return creds
     
     def get_langchain_tools(self) -> List[BaseTool]:
@@ -988,6 +1008,7 @@ def initialize_calendar_tools(
     credentials_file: str = "credentials.json",
     timezone: str = "Asia/Jakarta",
     token_file: Optional[str] = None,
+    agent_id: Optional[str] = None,
 ) -> List[BaseTool]:
     """Initialize and return Google Calendar tools for LangChain
     
@@ -1003,8 +1024,9 @@ def initialize_calendar_tools(
         # Leave token_file blank unless explicitly provided so we can derive provider-specific path
         token_file=(token_file or ""),
         timezone=timezone,
+        agent_id=agent_id,
     )
-    
+
     calendar_tools = GoogleCalendarTools(config)
     return calendar_tools.get_langchain_tools()
 

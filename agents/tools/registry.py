@@ -1,6 +1,8 @@
 # Tool registry
 # agents/tools/registry.py
 
+from typing import Any
+
 from .google_search import google_search_tool
 from .google_serper import google_serper_tool
 from .google_trends import google_trends_tool
@@ -283,15 +285,96 @@ def expand_tool_names(names: list[str]) -> list[str]:
     return out
 
 
-def get_tools_by_names(names: list[str]):
+def get_tools_by_names(names: list[str], agent_id: str | None = None):
     """
     Return a list of tool instances for the given names, ignoring unknown ones.
     """
     final_names = expand_tool_names(names)
     tools = []
+    gmail_agent_tools: dict[str, Any] | None = None
+    calendar_agent_tools: dict[str, Any] | None = None
+    docs_agent_tools: dict[str, Any] | None = None
+    gmail_name_map = {
+        "gmail": "gmail",
+        "google_gmail": "gmail",
+        "gmail_search": "gmail_search",
+        "gmail_send_message": "gmail_send_message",
+        "gmail_read_messages": "gmail_read_messages",
+        "gmail_get_message": "gmail_get_message",
+        "gmail_read": "gmail_read_messages",
+        "gmail_read_inbox": "gmail_read_messages",
+        "gmail_get": "gmail_get_message",
+        "gmail_message": "gmail_get_message",
+        "send_email": "gmail_send_message",
+        "email_send": "gmail_send_message",
+    }
+    calendar_alias_map = {"google_calendar": "calendar"}
+    docs_alias_map = {"docs": "google_docs"}
     for name in final_names:
         name_lower = name.lower()
         tool = TOOL_REGISTRY.get(name) or TOOL_REGISTRY.get(name_lower)
+        if agent_id:
+            if name_lower in gmail_name_map:
+                if gmail_agent_tools is None:
+                    from . import gmail as gmail_mod
+
+                    gmail_list = gmail_mod.create_gmail_tools(agent_id=agent_id)
+                    gmail_agent_tools = {t.name: t for t in gmail_list}
+                mapped = gmail_name_map.get(name_lower, name_lower)
+                tool = gmail_agent_tools.get(mapped) or tool
+            elif name_lower in (_CALENDAR_TOOL_NAMES | {"google_calendar"}):
+                if calendar_agent_tools is None:
+                    from . import google_calendar as gcal_mod
+
+                    creds_path = os.getenv("GCAL_CREDENTIALS_PATH") or os.path.join(
+                        os.getcwd(), "credentials.json"
+                    )
+                    try:
+                        if os.path.isdir(creds_path):
+                            creds_path = os.path.join(creds_path, "credentials.json")
+                    except Exception:
+                        pass
+                    timezone = os.getenv("GCAL_TIMEZONE", "Asia/Jakarta")
+                    token_path = os.getenv("GCAL_TOKEN_PATH")
+                    try:
+                        if token_path and os.path.isdir(token_path):
+                            token_path = os.path.join(token_path, "calendar_token.json")
+                    except Exception:
+                        pass
+                    cal_list = gcal_mod.initialize_calendar_tools(
+                        credentials_file=creds_path,
+                        timezone=timezone,
+                        token_file=token_path,
+                        agent_id=agent_id,
+                    )
+                    calendar_agent_tools = {t.name: t for t in cal_list}
+                    if "calendar" in calendar_agent_tools:
+                        calendar_agent_tools.setdefault("google_calendar", calendar_agent_tools["calendar"])
+                mapped = calendar_alias_map.get(name_lower, name_lower)
+                tool = calendar_agent_tools.get(mapped) or tool
+            elif name_lower in {"google_docs", "docs", "docs_create", "docs_get", "docs_append", "docs_export_pdf"}:
+                if docs_agent_tools is None:
+                    from . import google_docs as gdocs_mod
+
+                    creds_path = os.getenv("GDOCS_CREDENTIALS_PATH") or os.getenv("GCAL_CREDENTIALS_PATH") or os.path.join(
+                        os.getcwd(), "credential_folder", "credentials.json"
+                    )
+                    try:
+                        if os.path.isdir(creds_path):
+                            creds_path = os.path.join(creds_path, "credentials.json")
+                    except Exception:
+                        pass
+                    token_path = os.getenv("GDOCS_TOKEN_PATH")
+                    docs_list = gdocs_mod.initialize_docs_tools(
+                        credentials_file=creds_path,
+                        token_file=token_path,
+                        agent_id=agent_id,
+                    )
+                    docs_agent_tools = {t.name: t for t in docs_list}
+                    if "google_docs" in docs_agent_tools:
+                        docs_agent_tools.setdefault("docs", docs_agent_tools["google_docs"])
+                mapped = docs_alias_map.get(name_lower, name_lower)
+                tool = docs_agent_tools.get(mapped) or tool
         # Lazy self-heal for Gmail entries if they were None at import time
         if tool is None and name_lower.startswith("gmail"):
             try:

@@ -489,6 +489,56 @@ async function main() {
       // Surface error but don't crash the caller by exiting silently
       console.log(jsonBigInt({ ok: false, reason: 'save_token_failed', error: String(e) }));
     }
+  } else if (command === 'get_token') {
+    try {
+      const agentIdBig = BigInt(payload.agent_id);
+      const email = payload.email ? String(payload.email).toLowerCase() : null;
+      const userIdBig = payload.user_id != null ? BigInt(payload.user_id) : null;
+
+      let rows;
+      if (email && userIdBig != null) {
+        rows = await prisma.$queryRaw`
+          SELECT servicesaccount
+          FROM "public"."list_account"
+          WHERE "agent_id" = ${agentIdBig} AND "user_id" = ${userIdBig} AND "email" = ${email}
+          ORDER BY updated_at DESC NULLS LAST
+          LIMIT 1
+        `;
+      } else if (email) {
+        rows = await prisma.$queryRaw`
+          SELECT servicesaccount
+          FROM "public"."list_account"
+          WHERE "agent_id" = ${agentIdBig} AND "email" = ${email}
+          ORDER BY updated_at DESC NULLS LAST
+          LIMIT 1
+        `;
+      } else if (userIdBig != null) {
+        rows = await prisma.$queryRaw`
+          SELECT servicesaccount
+          FROM "public"."list_account"
+          WHERE "agent_id" = ${agentIdBig} AND "user_id" = ${userIdBig}
+          ORDER BY updated_at DESC NULLS LAST
+          LIMIT 1
+        `;
+      } else {
+        rows = await prisma.$queryRaw`
+          SELECT servicesaccount
+          FROM "public"."list_account"
+          WHERE "agent_id" = ${agentIdBig}
+          ORDER BY updated_at DESC NULLS LAST
+          LIMIT 1
+        `;
+      }
+
+      const row = rows && rows[0];
+      let token = row ? row.servicesaccount : null;
+      if (token && typeof token === 'string') {
+        try { token = JSON.parse(token); } catch { token = null; }
+      }
+      console.log(jsonBigInt({ ok: true, token: token || null }));
+    } catch (e) {
+      console.log(jsonBigInt({ ok: false, reason: 'get_token_failed', error: String(e) }));
+    }
   }
 }
 

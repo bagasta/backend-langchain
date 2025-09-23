@@ -68,17 +68,22 @@ def _load_sql_history(session_id: str) -> BaseChatMessageHistory:
 
     try:
         timeout = int(os.getenv("DB_CONNECT_TIMEOUT", "3"))
+        connect_args: dict[str, object] = {}
+        if not db_url.startswith("sqlite"):
+            connect_args["connect_timeout"] = timeout
         engine = create_engine(
             db_url,
-            connect_args={"connect_timeout": timeout},
+            connect_args=connect_args,
             pool_pre_ping=True,
         )
         # Fail fast if DB is unreachable
         try:
             with engine.connect() as conn:
                 pass
-        except Exception:
-            logging.warning("DB unreachable for SQL memory; using in-memory history instead")
+        except Exception as exc:
+            logging.warning(
+                "DB unreachable for SQL memory; using in-memory history instead", exc_info=exc
+            )
             return ChatMessageHistory()
         # Prefer per-agent table when session encodes user:agent
         table_name = _memory_table_for_session(session_id)

@@ -2,7 +2,10 @@ import os
 import logging
 from urllib.parse import urlparse
 
-import psycopg2
+try:
+    import psycopg2
+except Exception:  # pragma: no cover - optional dependency
+    psycopg2 = None  # type: ignore
 
 
 log = logging.getLogger("memory_bootstrap")
@@ -32,6 +35,8 @@ def ensure_memory_database():
     """
     url = os.getenv("MEMORY_DATABASE_URL")
     if not url:
+        return
+    if psycopg2 is None:
         return
     try:
         admin_dsn, dbname = _parse_base_conn_info(url)

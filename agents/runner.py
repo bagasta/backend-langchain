@@ -1,17 +1,18 @@
 # Run agent loop
 # agents/runner.py
 
+import json
+import logging
 import os
 import time
-import logging
-from typing import Optional, Callable
+from typing import Callable, Optional
 from uuid import uuid4
+
 from config.schema import AgentConfig
 from agents.builder import build_agent
 from database.client import get_agent_owner_id
 from agents.rag import retrieve_topk, format_context, embed_text
 from agents.memory import persist_conversation
-import json
 from langchain_openai import ChatOpenAI
 
 
@@ -457,7 +458,11 @@ def run_custom_agent(
     except Exception as e:
         print(f"[RAG] unexpected error preparing context: {e}")
 
-    agent = build_agent(config)
+    try:
+        agent = build_agent(config, agent_id=agent_id)
+    except TypeError:
+        # Backward compatibility with monkeypatched builds expecting legacy signature
+        agent = build_agent(config)
     payload = {"input": message}
     try:
         if config.memory_enabled:

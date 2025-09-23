@@ -13,7 +13,10 @@ from agents.builder import build_agent
 from database.client import get_agent_owner_id
 from agents.rag import retrieve_topk, format_context, embed_text
 from agents.memory import persist_conversation
-from langchain_openai import ChatOpenAI
+try:  # pragma: no cover - shim for environments lacking langchain-openai
+    from langchain_openai import ChatOpenAI
+except ImportError:  # pragma: no cover
+    from utils.openai_stub import ChatOpenAI
 
 
 logger = logging.getLogger("runner")

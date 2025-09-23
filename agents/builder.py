@@ -3,7 +3,10 @@
 
 import os
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
+try:  # pragma: no cover - dependency shim for tests/CI without langchain-openai
+    from langchain_openai import ChatOpenAI
+except ImportError:  # pragma: no cover
+    from utils.openai_stub import ChatOpenAI
 from langchain.agents import AgentExecutor, AgentType, create_tool_calling_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory

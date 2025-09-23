@@ -93,7 +93,23 @@ class GoogleDocsClient:
         self.docs_service = None
         self.drive_service = None
         self.session: Optional[AuthorizedSession] = None
-        self._init_services()
+        self._init_error: Optional[str] = None
+        try:
+            self._init_services()
+        except Exception as exc:
+            # Defer errors until tool execution so agents can still load without credentials.
+            self._init_error = str(exc)
+            logger.info("Google Docs client unavailable until OAuth completes: %s", exc)
+
+    def _ensure_ready(self) -> None:
+        """Raise a clear error when the client is not ready to serve requests."""
+
+        if self._init_error:
+            raise RuntimeError(
+                "Google Docs tool unavailable: " + self._init_error
+            )
+        if not (self.docs_service or self.session):
+            raise RuntimeError("Google Docs client not initialized")
 
     def _get_credentials(self) -> Credentials:
         if Credentials is None or Request is None:
@@ -127,21 +143,42 @@ class GoogleDocsClient:
 
     def _init_services(self):
         creds = self._get_credentials()
-        try:
-            self.docs_service = build("docs", "v1", credentials=creds, cache_discovery=False)
-            self.drive_service = build("drive", "v3", credentials=creds, cache_discovery=False)
-        except Exception as exc:
-            logger.warning(f"Failed to build discovery clients ({exc}); using REST session")
-            self.session = AuthorizedSession(creds)
+        fallback_reason: Optional[str] = None
+        if build is not None:
+            try:
+                self.docs_service = build("docs", "v1", credentials=creds, cache_discovery=False)
+                self.drive_service = build("drive", "v3", credentials=creds, cache_discovery=False)
+            except Exception as exc:
+                fallback_reason = str(exc)
+                self.docs_service = None
+                self.drive_service = None
+        else:
+            fallback_reason = "googleapiclient.discovery not available"
+
+        if self.docs_service and self.drive_service:
+            return
+
+        if AuthorizedSession is None:
+            raise RuntimeError(
+                "Google Docs discovery client unavailable and REST session cannot be created without google-auth libraries."
+            )
+
+        if fallback_reason:
+            logger.info(
+                "Google Docs discovery client unavailable (%s); using REST session", fallback_reason
+            )
+        self.session = AuthorizedSession(creds)
 
     # ---------- Docs ops (REST fallbacks included) ----------
     def docs_get(self, document_id: str) -> Dict[str, Any]:
+        self._ensure_ready()
         if self.docs_service:
             return self.docs_service.documents().get(documentId=document_id).execute()
         r = self.session.get(f"https://docs.googleapis.com/v1/documents/{document_id}", timeout=20)
         r.raise_for_status(); return r.json()
 
     def docs_create(self, title: str) -> Dict[str, Any]:
+        self._ensure_ready()
         body = {"title": title}
         if self.docs_service:
             return self.docs_service.documents().create(body=body).execute()
@@ -149,6 +186,7 @@ class GoogleDocsClient:
         r.raise_for_status(); return r.json()
 
     def docs_batch_update(self, document_id: str, requests: List[Dict[str, Any]]) -> Dict[str, Any]:
+        self._ensure_ready()
         body = {"requests": requests}
         if self.docs_service:
             return (
@@ -164,6 +202,7 @@ class GoogleDocsClient:
         r.raise_for_status(); return r.json()
 
     def drive_export_pdf(self, file_id: str) -> bytes:
+        self._ensure_ready()
         if self.drive_service:
             request = self.drive_service.files().export_media(fileId=file_id, mimeType="application/pdf")
             import io as _io

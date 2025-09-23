@@ -103,25 +103,54 @@ class GoogleCalendarTools:
             pass
         self.service = None
         self.session: Optional[AuthorizedSession] = None
-        self._initialize_service()
+        self._init_error: Optional[str] = None
+        try:
+            self._initialize_service()
+        except Exception as exc:
+            # Allow the agent to load even when credentials are missing so we can surface a friendly error at call time.
+            self._init_error = str(exc)
+            logger.info("Google Calendar client unavailable until OAuth completes: %s", exc)
     
     def _initialize_service(self):
         """Initialize Google Calendar service"""
         try:
             creds = self._get_credentials()
-            try:
-                # Prefer discovery client when available
-                self.service = build('calendar', 'v3', credentials=creds, cache_discovery=False)
-                logger.info("Google Calendar service initialized successfully")
-            except Exception as build_exc:
-                # Fallback to direct REST session if discovery fails (e.g., UnknownApiNameOrVersion)
-                logger.warning(f"Calendar discovery client unavailable ({build_exc}); falling back to REST session")
-                self.session = AuthorizedSession(creds)
+            fallback_reason: Optional[str] = None
+            if build is not None:
+                try:
+                    # Prefer discovery client when available
+                    self.service = build('calendar', 'v3', credentials=creds, cache_discovery=False)
+                    logger.info("Google Calendar service initialized successfully")
+                except Exception as build_exc:
+                    fallback_reason = str(build_exc)
+                    self.service = None
+            else:
+                fallback_reason = "googleapiclient.discovery not available"
+
+            if self.service:
+                return
+
+            if AuthorizedSession is None:
+                raise RuntimeError(
+                    "Google Calendar discovery client unavailable and REST session cannot be created without google-auth libraries."
+                )
+
+            if fallback_reason:
+                logger.info(
+                    "Calendar discovery client unavailable (%s); falling back to REST session", fallback_reason
+                )
+            self.session = AuthorizedSession(creds)
         except Exception as e:
             logger.error(f"Failed to initialize Google Calendar service: {e}")
-            # If credentials are ok but discovery failed, we may still have a REST session
-            if self.session is None:
-                raise
+            raise
+
+    def _require_client(self) -> None:
+        """Ensure a usable client/session exists before making API calls."""
+
+        if self._init_error:
+            raise RuntimeError("Google Calendar tool unavailable: " + self._init_error)
+        if not (self.service or self.session):
+            raise RuntimeError("Google Calendar client not initialized")
 
     # -----------------------------
     # Helpers
@@ -210,6 +239,7 @@ class GoogleCalendarTools:
         return "https://www.googleapis.com/calendar/v3"
 
     def events_list(self, **params) -> Dict[str, Any]:
+        self._require_client()
         if self.service:
             return self.service.events().list(**params).execute()
         if not self.session:
@@ -220,6 +250,7 @@ class GoogleCalendarTools:
         return resp.json()
 
     def events_get(self, calendarId: str, eventId: str) -> Dict[str, Any]:
+        self._require_client()
         if self.service:
             return self.service.events().get(calendarId=calendarId, eventId=eventId).execute()
         if not self.session:
@@ -229,6 +260,7 @@ class GoogleCalendarTools:
         return resp.json()
 
     def events_insert(self, calendarId: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        self._require_client()
         if self.service:
             return self.service.events().insert(calendarId=calendarId, body=body).execute()
         if not self.session:
@@ -238,6 +270,7 @@ class GoogleCalendarTools:
         return resp.json()
 
     def events_update(self, calendarId: str, eventId: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        self._require_client()
         if self.service:
             return self.service.events().update(calendarId=calendarId, eventId=eventId, body=body).execute()
         if not self.session:
@@ -247,6 +280,7 @@ class GoogleCalendarTools:
         return resp.json()
 
     def events_delete(self, calendarId: str, eventId: str) -> None:
+        self._require_client()
         if self.service:
             self.service.events().delete(calendarId=calendarId, eventId=eventId).execute()
             return
@@ -258,6 +292,7 @@ class GoogleCalendarTools:
             self._raise_for_status_with_detail(resp, context="events.delete")
 
     def freebusy_query(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        self._require_client()
         if self.service:
             return self.service.freebusy().query(body=body).execute()
         if not self.session:
@@ -267,6 +302,7 @@ class GoogleCalendarTools:
         return resp.json()
 
     def calendar_list_list(self, **params) -> Dict[str, Any]:
+        self._require_client()
         if self.service:
             return self.service.calendarList().list(**params).execute()
         if not self.session:

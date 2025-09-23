@@ -21,6 +21,14 @@ import time
 _EXECUTOR_CACHE = {}
 _EXECUTOR_CACHE_MAX = int(os.getenv("AGENT_EXECUTOR_CACHE_MAX", "24"))
 
+
+def _escape_braces(text: str) -> str:
+    """Escape curly braces for LangChain f-string prompts."""
+
+    if not text:
+        return text
+    return text.replace("{", "{{").replace("}", "}}")
+
 def _cache_key(cfg: AgentConfig, api_key: str) -> str:
     parts = [
         cfg.model_name or "",
@@ -172,6 +180,7 @@ def build_agent(config: AgentConfig, agent_id: str | None = None):
             f"{config.system_message}\n\nTool usage guidance:\n- "
             + "\n- ".join(extra_guidance)
         )
+    system_text = _escape_braces(system_text)
 
     # 3. Ensure a supported conversational agent type
     supported_agent_types = {

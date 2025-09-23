@@ -47,6 +47,33 @@ def test_build_agent_applies_system_message(monkeypatch):
     assert captured["executor_kwargs"]["handle_parsing_errors"] is True
 
 
+def test_build_agent_escapes_curly_braces_in_system_message(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    captured = {}
+
+    def fake_create_agent(llm, tools, prompt):
+        captured["system"] = prompt.messages[0].prompt.template
+        return "agent"
+
+    class DummyExecutor:
+        def __init__(self, *, agent, tools, **kwargs):
+            pass
+
+    monkeypatch.setattr("agents.builder.ChatOpenAI", lambda **_: object())
+    monkeypatch.setattr("agents.builder.create_tool_calling_agent", fake_create_agent)
+    monkeypatch.setattr("agents.builder.AgentExecutor", DummyExecutor)
+
+    config = AgentConfig(
+        model_name="gpt-4o-mini",
+        system_message='{"email_id": "123"}',
+        tools=[],
+        memory_enabled=False,
+    )
+
+    build_agent(config)
+    assert captured["system"] == '{{"email_id": "123"}}'
+
+
 def test_build_agent_sets_iteration_limits(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "key")
 

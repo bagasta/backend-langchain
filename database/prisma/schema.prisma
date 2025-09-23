@@ -9,22 +9,77 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/// Users table mapped to `users`
 model User {
-  id         String   @id @default(uuid())
-  email      String   @unique
-  name       String
-  agents     Agent[]                      // Relasi one-to-many: 1 user banyak agent
-  createdAt  DateTime @default(now())
+  id            BigInt        @id @default(autoincrement())
+  email         String        @unique
+  name          String
+  // Relations
+  agents        Agent[]       @relation("UserToAgent")
+  list_accounts ListAccount[] @relation("UserToListAccount")
+  api_keys      ApiKey[]
+  created_at    DateTime      @default(now()) @db.Timestamptz(6)
+  updated_at    DateTime      @updatedAt @db.Timestamptz(6)
+
+  @@map("users")
 }
 
+/// Agents table mapped to `agent`
 model Agent {
-  id             String   @id @default(uuid())
-  ownerId        String
-  owner          User     @relation(fields: [ownerId], references: [id])  // foreign key ke User
-  name           String
-  modelName      String     // misal: "gpt-4", "gpt-3.5-turbo"
-  systemMessage  String     // prompt dasar agent
-  tools          String[]   // misal: ["google", "calc"]
-  memoryEnabled  Boolean    @default(false)
-  createdAt      DateTime   @default(now())
+  id             BigInt   @id @default(autoincrement())
+  user_id        BigInt
+  user           User     @relation("UserToAgent", fields: [user_id], references: [id], onDelete: Cascade)
+  /// Optional display name for the agent
+  agent_name     String?
+  /// Model name (e.g., gpt-4o-mini)
+  nama_model     String
+  system_message String
+  /// Tools stored as a string (e.g., JSON string). MVP design allows later normalization.
+  tools          String
+  /// Agent type string (may be normalized later)
+  agent_type     String
+  created_at     DateTime @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime @updatedAt @db.Timestamptz(6)
+
+  list_accounts ListAccount[] @relation("AgentToListAccount")
+
+  @@index([user_id], name: "idx_agent_user_id")
+  @@map("agent")
+}
+
+/// OAuth token store per agent (Google tokens etc.) mapped to `list_account`
+model ListAccount {
+  id              BigInt   @id @default(autoincrement())
+  user_id         BigInt
+  agent_id        BigInt
+  email           String
+  servicesaccount Json     @db.JsonB
+  created_at      DateTime @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime @updatedAt @db.Timestamptz(6)
+
+  user  User  @relation("UserToListAccount", fields: [user_id], references: [id], onDelete: Cascade)
+  agent Agent @relation("AgentToListAccount", fields: [agent_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, agent_id, email], name: "uq_list_account_user_agent_email")
+  @@index([user_id], name: "idx_list_account_user_id")
+  @@index([agent_id], name: "idx_list_account_agent_id")
+  @@map("list_account")
+}
+
+/// Per-user API keys mapped to `api_key`
+model ApiKey {
+  id           BigInt    @id @default(autoincrement())
+  user_id      BigInt
+  user         User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  /// Plaintext API key (stored as-is to match client output)
+  key_hash     String    @db.VarChar(128)
+  label        String?
+  active       Boolean   @default(true)
+  expires_at   DateTime? @db.Timestamptz(6)
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  last_used_at DateTime? @db.Timestamptz(6)
+
+  @@unique([key_hash])
+  @@index([user_id], name: "idx_apikey_user_id")
+  @@map("api_key")
 }

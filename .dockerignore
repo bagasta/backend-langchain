@@ -1,0 +1,16 @@
+__pycache__
+.pytest_cache
+.mypy_cache
+.venv
+*.pyc
+*.pyo
+*.pyd
+*.log
+node_modules
+database/prisma/node_modules
+.git
+.gitignore
+credential_folder/*
+!credential_folder/.gitkeep
+exports
+

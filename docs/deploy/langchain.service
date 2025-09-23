@@ -1,0 +1,17 @@
+[Unit]
+Description=LangChain Backend (Uvicorn)
+After=network.target
+
+[Service]
+# Update these paths for your host
+WorkingDirectory=/root/backend-langchain
+Environment=PATH=/root/backend-langchain/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PRISMA_CMD_TIMEOUT=15
+# Optional: pin Node binary if PATH is constrained
+# Environment=NODE_BIN=/usr/bin/node
+ExecStart=/root/backend-langchain/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8001 --workers 2 --proxy-headers --log-level info
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

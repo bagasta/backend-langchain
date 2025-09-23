@@ -3,9 +3,19 @@
 
 from pydantic import BaseModel
 from typing import List, Optional
+from langchain.agents import AgentType
+from agents.memory import MemoryBackend
 
 class AgentConfig(BaseModel):
     model_name: str
     system_message: str
     tools: List[str]
-    memory_enabled: Optional[bool] = False
+    # Enable memory by default and persist to SQL DB unless overridden
+    memory_enabled: Optional[bool] = True
+    memory_backend: Optional[MemoryBackend] = MemoryBackend.SQL
+    # Maximum number of past messages to load into context (None = all)
+    memory_max_messages: Optional[int] = None
+    openai_api_key: Optional[str] = None
+    max_iterations: Optional[int] = None
+    max_execution_time: Optional[float] = None
+    agent_type: AgentType = AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION

@@ -1,13 +1,621 @@
 # Run agent loop
 # agents/runner.py
 
+import os
+import time
+import logging
+from typing import Optional, Callable
+from uuid import uuid4
 from config.schema import AgentConfig
 from agents.builder import build_agent
+from database.client import get_agent_owner_id
+from agents.rag import retrieve_topk, format_context, embed_text
+from agents.memory import persist_conversation
+import json
+from langchain_openai import ChatOpenAI
 
-def run_custom_agent(config: AgentConfig, message: str) -> str:
+
+logger = logging.getLogger("runner")
+if not logger.handlers:
+    level = os.getenv("RUNNER_LOG_LEVEL", "INFO").upper()
+    try:
+        logger.setLevel(getattr(logging, level, logging.INFO))
+    except Exception:
+        logger.setLevel(logging.INFO)
+
+
+def _approx_tokens(text: str) -> int:
+    return max(1, int(len(text) / 4))
+
+
+def _dedupe_and_limit(snippets: list[dict], max_tokens: int) -> tuple[list[dict], int]:
+    seen = set()
+    total_tokens = 0
+    filtered: list[dict] = []
+    for s in snippets:
+        text = (s.get("text") or "").strip()
+        if not text:
+            continue
+        key = text[:256]
+        if key in seen:
+            continue
+        tokens = _approx_tokens(text)
+        if total_tokens + tokens > max_tokens:
+            break
+        seen.add(key)
+        filtered.append(s)
+        total_tokens += tokens
+    return filtered, total_tokens
+
+
+def _finalize_output(
+    api_key: str,
+    model_name: str,
+    user_message: str,
+    draft_text: str | None,
+    tool_summaries: list[str] | None,
+) -> str | None:
+    """Run a lightweight finalization pass to produce a polished user-facing reply.
+
+    Returns the finalized text, or None on failure.
     """
-    Build a LangChain agent from the given AgentConfig and run it on the input message,
-    returning the agent’s response.
-    """
+    try:
+        if os.getenv("FINALIZER_ENABLED", "true").lower() != "true":
+            return (draft_text or "").strip() or None
+        if not api_key:
+            return None
+        text = (draft_text or "").strip()
+        summaries = tool_summaries or []
+        # Build a concise prompt that asks for a single final message
+        sys = (
+            "You are a helpful assistant. Produce one final message for the user. "
+            "Integrate the draft answer and the tools' outcomes. Do not show raw JSON or a separate tool section. "
+            "Be concise and keep the user's language."
+        )
+        human = (
+            f"User asked: {user_message}\n\n"
+            f"Draft answer (may be empty): {text}\n\n"
+            f"Tool outcomes (summarized):\n" + ("\n".join(summaries) if summaries else "(none)")
+        )
+        # Use a fast model for the finalizer unless overridden
+        model = os.getenv("FINALIZER_MODEL", model_name or "gpt-4o-mini")
+        timeout = float(os.getenv("FINALIZER_TIMEOUT", "8"))
+        max_retries = int(os.getenv("FINALIZER_MAX_RETRIES", "0"))
+        llm = ChatOpenAI(model=model, api_key=api_key, temperature=0, timeout=timeout, max_retries=max_retries)
+        msg = llm.invoke([{"role": "system", "content": sys}, {"role": "user", "content": human}])
+        out = getattr(msg, "content", "")
+        return out.strip() or None
+    except Exception:
+        return None
+
+
+def _fast_rag_answer(
+    snippets: list[dict],
+    question: str,
+    api_key: str | None,
+    language_hint: str | None = None,
+    metrics: dict | None = None,
+    max_tokens: int | None = None,
+) -> str | None:
+    """Return a quick summary purely from retrieved snippets without running the full agent."""
+
+    if not snippets:
+        return None
+    key = api_key or os.getenv("OPENAI_API_KEY")
+    if not key:
+        return None
+    try:
+        model = os.getenv("FAST_RAG_MODEL", os.getenv("FINALIZER_MODEL", "gpt-4o-mini"))
+        timeout = float(os.getenv("FAST_RAG_TIMEOUT", "6"))
+        max_retries = int(os.getenv("FAST_RAG_MAX_RETRIES", "0"))
+        limit_tokens = max_tokens or int(os.getenv("FAST_RAG_MAX_TOKENS", "400"))
+    except Exception:
+        model = "gpt-4o-mini"
+        timeout = 6.0
+        max_retries = 0
+        limit_tokens = 400
+
+    prompt_context = format_context(snippets)
+    if not prompt_context:
+        return None
+
+    sys = (
+        "You are a concise assistant who answers strictly using the provided context. "
+        "If the context does not contain the answer, say you do not know. "
+        "Cite snippet numbers when relevant."
+    )
+    if language_hint:
+        sys += f" Respond in {language_hint}."
+
+    try:
+        llm = ChatOpenAI(
+            model=model,
+            api_key=key,
+            temperature=0,
+            timeout=timeout,
+            max_retries=max_retries,
+            max_tokens=limit_tokens,
+        )
+        msg = llm.invoke(
+            [
+                {"role": "system", "content": sys},
+                {
+                    "role": "user",
+                    "content": (
+                        "Context:\n"
+                        + prompt_context
+                        + "\n\nQuestion: "
+                        + question.strip()
+                        + "\n\nAnswer in one short paragraph."
+                    ),
+                },
+            ]
+        )
+        answer = getattr(msg, "content", "")
+        out = answer.strip() or None
+        if metrics is not None:
+            metrics.setdefault("t_llm_prefill", 0.0)
+            metrics.setdefault("t_first_token", 0.0)
+        return out
+    except Exception:
+        return None
+
+
+def run_fast_rag_stream(
+    agent_id: str,
+    owner_id: str | None,
+    config: AgentConfig,
+    message: str,
+    session_id_for_memory: str,
+    chat_sid: str,
+) -> tuple[Optional[callable], dict]:
+    metrics: dict[str, float | int] = {}
+    overall_start = time.perf_counter()
+    embed_start = time.perf_counter()
+    vector = embed_text(message, api_key=config.openai_api_key)
+    metrics["t_embed"] = time.perf_counter() - embed_start
+    if not vector:
+        return None, metrics
+    retrieve_start = time.perf_counter()
+    snippets = retrieve_topk(
+        owner_id or "",
+        agent_id,
+        message,
+        top_k=int(os.getenv("RAG_TOP_K", "3")),
+        api_key=config.openai_api_key,
+        query_vector=vector,
+    )
+    metrics["t_retrieve"] = time.perf_counter() - retrieve_start
+    if not snippets:
+        return None, metrics
+    try:
+        similarity_threshold = float(os.getenv("RAG_MIN_SIMILARITY", "0.2"))
+    except Exception:
+        similarity_threshold = 0.2
+    max_sim = max(
+        (
+            s.get("similarity")
+            if s.get("similarity") is not None
+            else 1 - float(s.get("score"))
+            if s.get("score") is not None
+            else None
+        )
+        for s in snippets
+    )
+    if max_sim is not None:
+        metrics["max_similarity"] = max_sim
+    if max_sim is not None and max_sim < similarity_threshold:
+        return None, metrics
+    max_prompt_tokens = int(os.getenv("RAG_MAX_PROMPT_TOKENS", "2000"))
+    snippets, prompt_tokens = _dedupe_and_limit(snippets, max_prompt_tokens)
+    metrics["prompt_tokens"] = prompt_tokens
+    if not snippets:
+        return None, metrics
+    context = format_context(snippets)
+    if not context:
+        return None, metrics
+    key = config.openai_api_key or os.getenv("OPENAI_API_KEY")
+    if not key:
+        return None, metrics
+    model = os.getenv("FAST_RAG_MODEL", "gpt-4o-mini")
+    timeout = float(os.getenv("FAST_RAG_TIMEOUT", "6"))
+    max_retries = int(os.getenv("FAST_RAG_MAX_RETRIES", "0"))
+    max_tokens = int(os.getenv("FAST_RAG_MAX_TOKENS", "400"))
+    language_hint = os.getenv("FAST_RAG_LANGUAGE")
+    sys = (
+        "You are a concise assistant who answers strictly using the provided context. "
+        "If the context does not contain the answer, say you do not know. "
+        "Cite snippet numbers when relevant."
+    )
+    if language_hint:
+        sys += f" Respond in {language_hint}."
+    llm = ChatOpenAI(
+        model=model,
+        api_key=key,
+        temperature=0,
+        timeout=timeout,
+        max_retries=max_retries,
+        max_tokens=max_tokens,
+    )
+
+    def generator():
+        aggregated: list[str] = []
+        prefill_start = time.perf_counter()
+        first_token_recorded = False
+        try:
+            for chunk in llm.stream(
+                [
+                    {"role": "system", "content": sys},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Context:\n"
+                            + context
+                            + "\n\nQuestion: "
+                            + message.strip()
+                            + "\n\nAnswer in one short paragraph."
+                        ),
+                    },
+                ]
+            ):
+                token = getattr(chunk, "content", "") or ""
+                if not token:
+                    continue
+                aggregated.append(token)
+                if not first_token_recorded:
+                    metrics["t_first_token"] = time.perf_counter() - prefill_start
+                    first_token_recorded = True
+                yield token
+        finally:
+            metrics["t_llm_prefill"] = time.perf_counter() - prefill_start
+            metrics["t_total"] = time.perf_counter() - overall_start
+            metrics["retrieved"] = len(snippets)
+            logger.info(
+                "[RAG] stream metrics agent=%s t_embed=%.3f t_retrieve=%.3f t_first_token=%.3f t_llm_prefill=%.3f prompt_tokens=%s",
+                agent_id,
+                metrics.get("t_embed", 0.0),
+                metrics.get("t_retrieve", 0.0),
+                metrics.get("t_first_token", -1.0),
+                metrics.get("t_llm_prefill", -1.0),
+                metrics.get("prompt_tokens", 0),
+            )
+            try:
+                if os.getenv("MEMORY_FALLBACK_WRITE", "true").lower() == "true":
+                    persist_conversation(
+                        session_id_for_memory,
+                        message,
+                        "".join(aggregated),
+                        chat_session_id=chat_sid,
+                    )
+            except Exception as exc:
+                logger.warning("[RAG] streaming persist failed: %s", exc)
+
+    return generator, metrics
+
+
+def run_custom_agent(
+    agent_id: str,
+    config: AgentConfig,
+    message: str,
+    session_id: str | None = None,
+    owner_id: str | None = None,
+    rag_enable: bool | None = None,
+) -> str:
+    """Build agent from config and execute it on the provided message."""
+    metrics: dict[str, float | int] = {}
+    overall_start = time.perf_counter()
+    # 0. Best-effort: retrieve RAG context and augment prompt
+    try:
+        top_k = int(os.getenv("RAG_TOP_K", "3"))
+    except Exception:
+        top_k = 5
+    # Build composite session id: "<user>:<agent>|<chat>"
+    table_key = agent_id
+    chat_sid = (session_id or "").strip() or uuid4().hex
+    session_id_for_memory = f"{table_key}|{chat_sid}"
+    try:
+        user_id = owner_id or get_agent_owner_id(agent_id)
+        if user_id:
+            table_key = f"{user_id}:{agent_id}"
+            session_id_for_memory = f"{table_key}|{chat_sid}"
+            use_rag = os.getenv("RAG_ENABLED", "true").lower() == "true"
+            if rag_enable is not None:
+                use_rag = bool(rag_enable)
+            snippets: list[dict] = []
+            if use_rag:
+                embed_start = time.perf_counter()
+                query_vector = embed_text(message, api_key=config.openai_api_key)
+                metrics["t_embed"] = time.perf_counter() - embed_start
+                if query_vector:
+                    retrieve_start = time.perf_counter()
+                    snippets = retrieve_topk(
+                        user_id,
+                        agent_id,
+                        message,
+                        top_k=top_k,
+                        api_key=config.openai_api_key,
+                        query_vector=query_vector,
+                    )
+                    metrics["t_retrieve"] = time.perf_counter() - retrieve_start
+                else:
+                    print(f"[RAG] embedding unavailable for agent={agent_id}, skipping context")
+            if snippets:
+                try:
+                    similarity_threshold = float(os.getenv("RAG_MIN_SIMILARITY", "0.2"))
+                except Exception:
+                    similarity_threshold = 0.2
+                max_similarity = None
+                for s in snippets:
+                    sim = s.get("similarity")
+                    if sim is None and s.get("score") is not None:
+                        try:
+                            sim = 1 - float(s.get("score"))
+                        except Exception:
+                            sim = None
+                    if sim is None:
+                        continue
+                    if max_similarity is None or sim > max_similarity:
+                        max_similarity = sim
+                if max_similarity is not None:
+                    metrics["max_similarity"] = max_similarity
+                if max_similarity is not None and max_similarity < similarity_threshold:
+                    print(
+                        f"[RAG] max similarity {max_similarity:.4f} below threshold {similarity_threshold:.2f}; skipping context"
+                    )
+                    snippets = []
+            if snippets:
+                max_prompt_tokens = int(os.getenv("RAG_MAX_PROMPT_TOKENS", "2000"))
+                snippets, prompt_tokens = _dedupe_and_limit(snippets, max_prompt_tokens)
+                metrics["prompt_tokens"] = prompt_tokens
+            fast_rag_mode = (
+                os.getenv("FAST_RAG_RESPONSE", "true").lower() == "true"
+                and not config.tools
+            )
+            if snippets and fast_rag_mode:
+                fast_metrics: dict[str, float | int] = {}
+                fast_answer = _fast_rag_answer(
+                    snippets,
+                    message,
+                    config.openai_api_key,
+                    language_hint=os.getenv("FAST_RAG_LANGUAGE"),
+                    metrics=fast_metrics,
+                    max_tokens=int(os.getenv("FAST_RAG_MAX_TOKENS", "400")),
+                )
+                if fast_answer:
+                    metrics.update(fast_metrics)
+                    try:
+                        if os.getenv("MEMORY_FALLBACK_WRITE", "true").lower() == "true":
+                            persist_conversation(
+                                session_id_for_memory,
+                                message,
+                                fast_answer,
+                                chat_session_id=chat_sid,
+                            )
+                    except Exception:
+                        pass
+                    return fast_answer
+            if snippets:
+                ctx = format_context(snippets)
+                # Build neat, readable log with scores and snippet previews
+                similarities = []
+                previews = []
+                max_chars = 200
+                try:
+                    max_chars = int(os.getenv("RAG_SNIPPET_PREVIEW_CHARS", "200"))
+                except Exception:
+                    pass
+                for i, s in enumerate(snippets, start=1):
+                    # Similarity list (0-1)
+                    similarity = None
+                    try:
+                        similarity = s.get("similarity")
+                        if similarity is None and s.get("score") is not None:
+                            similarity = 1 - float(s.get("score"))
+                        if similarity is not None:
+                            similarities.append(f"{float(similarity):.4f}")
+                        else:
+                            similarities.append("?")
+                    except Exception:
+                        similarities.append("?")
+                    # Snippet preview line
+                    try:
+                        tx = (s.get("text") or "").strip()
+                        if len(tx) > max_chars:
+                            tx = tx[:max_chars] + "..."
+                        similarity = s.get("similarity")
+                        if similarity is None and s.get("score") is not None:
+                            similarity = 1 - float(s.get("score"))
+                        sim_s = f"{float(similarity):.4f}" if similarity is not None else "?"
+                        previews.append(f"  [{i}] similarity={sim_s} text=\"{tx}\"")
+                    except Exception:
+                        previews.append(f"  [{i}] similarity=? text=<unavailable>")
+
+                # Prepend context to system_message
+                new_cfg = config.model_copy(deep=True)
+                before_len = len(config.system_message or "")
+                new_cfg.system_message = f"{ctx}\n\n{config.system_message}"
+                after_len = len(new_cfg.system_message or "")
+                # Consolidated block log
+                lines = []
+                lines.append("[RAG] ===== Context Injection =====")
+                lines.append(f"[RAG] Agent={agent_id} User={user_id} Snippets={len(snippets)}")
+                lines.append(f"[RAG] Similarities: {', '.join(similarities)}")
+                if os.getenv("RAG_LOG_CONTEXT", "true").lower() == "true":
+                    lines.append("[RAG] Snippet previews:")
+                    for p in previews:
+                        lines.append("[RAG]" + p)
+                lines.append(f"[RAG] System message length: {before_len} → {after_len}")
+                print("\n".join(lines))
+                # Full system message block if enabled
+                if os.getenv("RAG_LOG_SYSTEM_MESSAGE", "true").lower() == "true":
+                    print("[RAG] ----- BEGIN SYSTEM MESSAGE -----\n" + new_cfg.system_message + "\n[RAG] ----- END SYSTEM MESSAGE -----")
+                config = new_cfg
+            else:
+                print(f"[RAG] no context found for agent={agent_id} user={user_id}")
+        else:
+            print(f"[RAG] could not resolve user_id for agent={agent_id}; skipping RAG")
+    except Exception as e:
+        print(f"[RAG] unexpected error preparing context: {e}")
+
     agent = build_agent(config)
-    return agent.run(message)
+    payload = {"input": message}
+    try:
+        if config.memory_enabled:
+            result = agent.invoke(payload, config={"configurable": {"session_id": session_id_for_memory}})
+        else:
+            payload["chat_history"] = []
+            result = agent.invoke(payload)
+    except Exception as exc:
+        # Convert unexpected agent errors into a user-visible message instead of HTTP 500s
+        raise ValueError(f"Agent execution failed: {exc}") from exc
+
+    # Normalize various return types to a safe string (combine model output + tool summaries)
+    if isinstance(result, dict):
+        output_text = result.get("output")
+        inter = result.get("intermediate_steps") or []
+        summaries = []
+        gmail_text = None
+        try:
+            for step in inter:
+                if not isinstance(step, (list, tuple)) or len(step) < 2:
+                    continue
+                action, obs = step[0], step[1]
+                tool_name = getattr(action, "tool", None) or "tool"
+                text_obs = None
+                if isinstance(obs, dict):
+                    msg = obs.get("message") or obs.get("detail") or obs.get("error") or obs.get("status")
+                    rid = obs.get("id") or obs.get("threadId") or obs.get("messageId")
+                    if msg:
+                        text_obs = f"{msg}{f' (id: {rid})' if rid else ''}"
+                elif isinstance(obs, str):
+                    t = obs.strip()
+                    if (t.startswith("{") and t.endswith("}")) or (t.startswith("[") and t.endswith("]")):
+                        try:
+                            o2 = json.loads(t)
+                            if isinstance(o2, dict):
+                                msg = o2.get("message") or o2.get("detail") or o2.get("error") or o2.get("status")
+                                rid = o2.get("id") or o2.get("threadId") or o2.get("messageId")
+                                if msg:
+                                    text_obs = f"{msg}{f' (id: {rid})' if rid else ''}"
+                                # Capture Gmail send details to craft a friendly final line
+                                if (tool_name in {"gmail_send_message", "gmail"}) and gmail_text is None:
+                                    details = o2.get("details") or {}
+                                    to = details.get("to") or o2.get("to")
+                                    subject = details.get("subject") or o2.get("subject")
+                                    mid = o2.get("id") or o2.get("message_id") or o2.get("threadId") or o2.get("messageId")
+                                    if to or subject or mid:
+                                        parts = []
+                                        if to:
+                                            parts.append(f"ke {to}")
+                                        if subject:
+                                            parts.append(f"dengan subjek '{subject}'")
+                                        sent_clause = " ".join(parts) if parts else ""
+                                        suffix = f" (id: {mid})" if mid else ""
+                                        gmail_text = "Saya sudah mengirim email" + (f" {sent_clause}" if sent_clause else "") + "." + suffix
+                        except Exception:
+                            pass
+                    if text_obs is None and t:
+                        text_obs = t[:300]
+                if text_obs:
+                    summaries.append(f"- {tool_name}: {text_obs}")
+        except Exception:
+            pass
+
+        # Prefer conversational model output; humanize JSON output if needed
+        final_text = None
+        if isinstance(output_text, str) and output_text.strip():
+            t = output_text.strip()
+            is_json_like = (t.startswith("{") and t.endswith("}")) or (t.startswith("[") and t.endswith("]"))
+            if not is_json_like:
+                final_text = t
+            else:
+                try:
+                    o = json.loads(t)
+                    if isinstance(o, dict):
+                        msg = o.get("message") or o.get("detail") or o.get("error")
+                        rid = o.get("id") or o.get("threadId") or o.get("messageId")
+                        if msg:
+                            final_text = f"{msg}{f' (id: {rid})' if rid else ''}"
+                except Exception:
+                    pass
+
+        # Prefer crafted Gmail sentence over raw tool message
+        if gmail_text:
+            final_text = gmail_text if not final_text else final_text
+
+        # Optional finalizer pass to guarantee a polished user-facing message
+        use_finalizer = os.getenv("FINALIZE_OUTPUT", "true").lower() == "true"
+        finalized = None
+        if use_finalizer:
+            try:
+                api_key = config.openai_api_key or os.getenv("OPENAI_API_KEY", "")
+                finalized = _finalize_output(api_key, config.model_name, message, final_text, summaries)
+            except Exception:
+                finalized = None
+
+        if finalized:
+            result = finalized
+        else:
+            show_tools = os.getenv("TOOL_RESULTS_IN_OUTPUT", "false").lower() == "true"
+            if final_text and summaries:
+                result = (
+                    final_text
+                    if not show_tools
+                    else final_text + "\n\nTool results:\n" + "\n".join(summaries)
+                )
+            elif final_text:
+                result = final_text
+            elif summaries:
+                result = ("\n".join(summaries)) if show_tools else (output_text or "")
+            else:
+                result = output_text or json.dumps(result, default=str)
+    elif hasattr(result, "content"):
+        try:
+            result = result.content  # e.g., AIMessage
+        except Exception:
+            result = str(result)
+    elif not isinstance(result, str):
+        try:
+            result = json.dumps(result, default=str)
+        except Exception:
+            result = str(result)
+
+    if result == "Agent stopped due to iteration limit or time limit.":
+        raise ValueError(
+            "Agent execution stopped before producing a final answer. "
+            "Consider increasing max_iterations or revising the prompt."
+        )
+    # Humanize common tool JSON outputs (e.g., Gmail) into a friendly sentence
+    try:
+        if isinstance(result, str):
+            txt = result.strip()
+            if (txt.startswith("{") and txt.endswith("}")) or (txt.startswith("[") and txt.endswith("]")):
+                obj = json.loads(txt)
+                if isinstance(obj, dict):
+                    msg = obj.get("message") or obj.get("detail") or obj.get("error")
+                    status = obj.get("status") or ("ok" if obj.get("ok") is True else None)
+                    if msg and (status or (isinstance(msg, str) and ("success" in msg.lower() or "sent" in msg.lower()))):
+                        rid = obj.get("id") or obj.get("threadId") or obj.get("messageId")
+                        suffix = f" (id: {rid})" if rid else ""
+                        result = f"{msg}{suffix}"
+    except Exception:
+        pass
+    # Best-effort: ensure conversation is persisted to per-agent memory table
+    try:
+        if os.getenv("MEMORY_FALLBACK_WRITE", "true").lower() == "true":
+            persist_conversation(session_id_for_memory, message, result, chat_session_id=chat_sid)
+    except Exception:
+        pass
+    metrics["t_total"] = time.perf_counter() - overall_start
+    logger.info(
+        "[RAG] timings agent=%s t_embed=%.3f t_retrieve=%.3f prompt_tokens=%s t_agent=%.3f t_llm_prefill=%.3f t_first_token=%.3f t_total=%.3f",
+        agent_id,
+        metrics.get("t_embed", 0.0),
+        metrics.get("t_retrieve", 0.0),
+        metrics.get("prompt_tokens", 0),
+        metrics.get("t_agent_invoke", 0.0),
+        metrics.get("t_llm_prefill", -1.0),
+        metrics.get("t_first_token", -1.0),
+        metrics.get("t_total", 0.0),
+    )
+    return result

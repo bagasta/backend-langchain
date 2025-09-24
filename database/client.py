@@ -168,10 +168,20 @@ def _maybe_sync_prisma() -> None:
             timeout=_CMD_TIMEOUT,
         )
         _SYNC_DONE = True
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr.decode("utf-8", "ignore") if isinstance(exc.stderr, bytes) else exc.stderr) or ""
+        msg = stderr.strip() or str(exc)
+        _LOGGER.warning(
+            "Prisma auto-sync skipped (exit %s). Set PRISMA_AUTO_SYNC=false to silence this.",
+            exc.returncode,
+        )
+        if msg:
+            _LOGGER.debug("Prisma auto-sync output: %s", msg)
+        _SYNC_DONE = True  # avoid retry loop; manual sync required
     except Exception as exc:
         # Do not hard-fail here; surface errors on actual DB call
         _LOGGER.warning("Prisma auto-sync skipped: %s", exc)
-        _SYNC_DONE = False
+        _SYNC_DONE = True
 
 
 def _run(command: str, payload: dict) -> dict:

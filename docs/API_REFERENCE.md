@@ -349,8 +349,8 @@ curl "http://localhost:8000/oauth/google/callback?code=AUTH_CODE&state=AGENT_ID&
 - Caching: agent configs are cached in memory and under `database/cache/agents/{id}.json` for faster runs and DB resilience.
 
 ## RAG Behavior
-- Default embedding model `text-embedding-3-large` (3072 dims). Fallback auto‑retry handles mixed 1536/3072 setups.
-- Knowledge tables live in `KNOWLEDGE_DATABASE_URL` (or derived) with `vector(3072)` embeddings.
+- Default embedding model `text-embedding-3-large` (3072 dims). Override `EMBEDDING_MODEL` and set `KNOWLEDGE_VECTOR_DIM`/`RAG_VECTOR_DIM` when using other dimensions. Use `RAG_IVFFLAT_MAX_DIM` to cap IVFFlat indexing (defaults to 2000) and fall back to sequential scans for higher dimensions.
+- Knowledge tables live in `KNOWLEDGE_DATABASE_URL` (or derived) with `vector(N)` embeddings (default `N=3072`).
 - Logs can be toggled via `RAG_LOG_CONTEXT`, `RAG_LOG_SYSTEM_MESSAGE`, `RAG_SNIPPET_PREVIEW_CHARS`.
 
 ## Memory Behavior

@@ -147,7 +147,7 @@ Both endpoints accept optional limits: set `max_iterations` or `max_execution_ti
 
 - Default embedding model: `text-embedding-3-large` (3072 dims). Override with `EMBEDDING_MODEL`.
 - Knowledge DB: `KNOWLEDGE_DATABASE_URL` or derived from `DATABASE_URL` as `/knowledge_clevio_pro`.
-- Per‑agent knowledge tables: `public."tb_{userId}_{agentId}"` with `embedding vector(3072)` and IVFFlat index.
+- Per‑agent knowledge tables: `public."tb_{userId}_{agentId}"` with `embedding vector(N)` (default `3072`). Override `KNOWLEDGE_VECTOR_DIM`/`RAG_VECTOR_DIM` when using different embedding models. Set `RAG_IVFFLAT_MAX_DIM` (default `2000`) when you need to disable IVFFlat index creation for higher-dimension embeddings.
 - Logs:
   - `RAG_LOG_CONTEXT=true|false` shows snippet previews.
   - `RAG_LOG_SYSTEM_MESSAGE=true|false` prints full system message with injected context.

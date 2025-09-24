@@ -185,8 +185,9 @@ def expand_tool_names(names: list[str]) -> list[str]:
             "google_gmail": "google_gmail",
             "g_mail": "google_gmail",
             # Calendar
-            "calendar": "google_calendar",
+            "calendar": "calendar",
             "google_calendar": "google_calendar",
+            "google_calender": "google_calendar",
             "google_cal": "google_calendar",
             # Docs
             "google_docs": "google_docs",
@@ -236,8 +237,14 @@ def expand_tool_names(names: list[str]) -> list[str]:
             expanded.append("gmail_get_message")
         if "gmail_send_message" not in expanded:
             expanded.append("gmail_send_message")
+    # Keep 'calendar' as unified tool, don't expand it
+    if "calendar" in lower and "google_calendar" not in lower:
+        # Just keep the unified calendar tool, remove any individual calendar tools
+        expanded = [n for n in expanded if n not in _CALENDAR_TOOL_NAMES]
+        if "calendar" not in expanded:
+            expanded.append("calendar")
     # Expand Google Calendar umbrella name into concrete tools
-    if "google_calendar" in lower:
+    elif "google_calendar" in lower:
         for n in [
             "create_calendar_event",
             "list_calendar_events",
@@ -326,16 +333,36 @@ def get_tools_by_names(names: list[str], agent_id: str | None = None):
                 if calendar_agent_tools is None:
                     from . import google_calendar as gcal_mod
 
-                    creds_path = os.getenv("GCAL_CREDENTIALS_PATH") or os.path.join(
-                        os.getcwd(), "credentials.json"
-                    )
-                    try:
-                        if os.path.isdir(creds_path):
-                            creds_path = os.path.join(creds_path, "credentials.json")
-                    except Exception:
-                        pass
+                    cred_candidates: list[str] = []
+                    raw_env = os.getenv("GCAL_CREDENTIALS_PATH")
+                    if raw_env:
+                        cred_candidates.append(raw_env)
+                    google_env = os.getenv("GOOGLE_CREDENTIALS_PATH")
+                    if google_env:
+                        cred_candidates.append(google_env)
+                    cred_candidates.extend([
+                        os.path.join(os.getcwd(), "credential_folder", "credentials.json"),
+                        os.path.join(gcal_mod._default_calendar_dir()),
+                        os.path.join(os.getcwd(), "credentials.json"),
+                    ])
+                    creds_path = None
+                    for cand in cred_candidates:
+                        if not cand:
+                            continue
+                        path_candidate = cand
+                        try:
+                            if os.path.isdir(path_candidate):
+                                path_candidate = os.path.join(path_candidate, "credentials.json")
+                        except Exception:
+                            continue
+                        if os.path.exists(path_candidate):
+                            creds_path = path_candidate
+                            break
+                    if not creds_path:
+                        # Let calendar module perform its own fallback handling
+                        creds_path = os.path.join(os.getcwd(), "credentials.json")
                     timezone = os.getenv("GCAL_TIMEZONE", "Asia/Jakarta")
-                    token_path = os.getenv("GCAL_TOKEN_PATH")
+                    token_path = os.getenv("GCAL_TOKEN_PATH") or None
                     try:
                         if token_path and os.path.isdir(token_path):
                             token_path = os.path.join(token_path, "calendar_token.json")
@@ -401,10 +428,7 @@ def get_tools_by_names(names: list[str], agent_id: str | None = None):
             except Exception:
                 pass
         # Lazy init for Google Calendar tools
-        if (tool is None or (
-            name_lower in _CALENDAR_TOOL_NAMES and isinstance(tool, object) and 
-            getattr(tool, "description", "").lower().startswith("google calendar stub tool")
-        )) and name_lower in _CALENDAR_TOOL_NAMES:
+        if tool is None and name_lower in _CALENDAR_TOOL_NAMES:
             try:
                 import importlib
                 from . import google_calendar as gcal_mod
@@ -433,7 +457,9 @@ def get_tools_by_names(names: list[str], agent_id: str | None = None):
                 # Map by name
                 for t in tools_list:
                     TOOL_REGISTRY[t.name] = t
+                    print(f"[DEBUG] Registered calendar tool: {t.name}")
                 tool = TOOL_REGISTRY.get(name) or TOOL_REGISTRY.get(name_lower)
+                print(f"[DEBUG] Found calendar tool for {name}: {tool is not None}")
             except Exception as e:
                 print(f"[WARNING] Failed to initialize Google Calendar tools: {e}")
                 # Provide graceful stub tools so the agent can still respond

@@ -10,6 +10,7 @@ grant Calendar access.
 import os
 import datetime
 import logging
+import re
 from typing import Dict, List, Optional, Any, Union, Type, Tuple
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
@@ -272,12 +273,27 @@ class GoogleCalendarTools:
     def events_update(self, calendarId: str, eventId: str, body: Dict[str, Any]) -> Dict[str, Any]:
         self._require_client()
         if self.service:
-            return self.service.events().update(calendarId=calendarId, eventId=eventId, body=body).execute()
+            try:
+                logging.debug(f"Using service library to update event {eventId} with body: {body}")
+                result = self.service.events().update(calendarId=calendarId, eventId=eventId, body=body).execute()
+                logging.debug(f"Service library update result: {result}")
+                return result
+            except Exception as service_error:
+                logging.error(f"Service library update error: {service_error}")
+                raise service_error
         if not self.session:
             raise RuntimeError("Calendar client not initialized")
-        resp = self.session.put(f"{self._base_url}/calendars/{calendarId}/events/{eventId}", json=body, timeout=20)
-        self._raise_for_status_with_detail(resp, context="events.update")
-        return resp.json()
+
+        try:
+            logging.debug(f"Using REST API to update event {eventId} with body: {body}")
+            resp = self.session.put(f"{self._base_url}/calendars/{calendarId}/events/{eventId}", json=body, timeout=20)
+            logging.debug(f"REST API response status: {resp.status_code}")
+            logging.debug(f"REST API response body: {resp.text}")
+            self._raise_for_status_with_detail(resp, context="events.update")
+            return resp.json()
+        except Exception as rest_error:
+            logging.error(f"REST API update error: {rest_error}")
+            raise rest_error
 
     def events_delete(self, calendarId: str, eventId: str) -> None:
         self._require_client()
@@ -367,7 +383,7 @@ class GoogleCalendarTools:
     
     def get_langchain_tools(self) -> List[BaseTool]:
         """Get list of LangChain tools for Google Calendar
-        
+
         Returns:
             List of LangChain tools
         """
@@ -382,6 +398,7 @@ class GoogleCalendarTools:
             ListCalendarsTool(calendar_tools=self),
             CalendarUnifiedTool(calendar_tools=self),
         ]
+
         return tools
 
 
@@ -404,6 +421,8 @@ def build_calendar_oauth_url(state: Optional[str] = None) -> Optional[str]:
         (os.path.join(os.getenv("GCAL_CREDENTIALS_PATH", ""), "credentials.json")
          if os.getenv("GCAL_CREDENTIALS_PATH") and os.path.isdir(os.getenv("GCAL_CREDENTIALS_PATH", ""))
          else os.getenv("GCAL_CREDENTIALS_PATH")),
+        os.getenv("GOOGLE_CREDENTIALS_PATH"),
+        os.path.join(os.getcwd(), "credential_folder", "credentials.json"),
         os.path.join(_default_calendar_dir(), "credentials.json"),
         os.path.join(os.getcwd(), "credentials.json"),
     ]
@@ -700,20 +719,31 @@ class GetEventTool(BaseTool):
     def _run(self, event_id: str) -> str:
         """Get specific calendar event"""
         try:
+            # Validate event_id format
+            if not event_id or not isinstance(event_id, str):
+                return "Error getting event: Invalid event ID format"
+
+            # Clean event_id (remove any extra whitespace)
+            event_id = event_id.strip()
+
+            # Check if event_id looks like a valid Google Calendar event ID
+            if not re.match(r'^[a-zA-Z0-9_\-]+$', event_id):
+                return f"Error getting event: Invalid event ID format '{event_id}'. Event IDs should be alphanumeric strings."
+
             event = self.calendar_tools.events_get(
                 calendarId='primary',
                 eventId=event_id,
             )
-            
+
             # Format event details
             output = f"Event Details:\n"
             output += f"Title: {event.get('summary', 'No title')}\n"
-            
+
             start = event['start'].get('dateTime', event['start'].get('date'))
             end = event['end'].get('dateTime', event['end'].get('date'))
             output += f"Start: {start}\n"
             output += f"End: {end}\n"
-            
+
             if 'location' in event:
                 output += f"Location: {event['location']}\n"
             if 'description' in event:
@@ -721,14 +751,18 @@ class GetEventTool(BaseTool):
             if 'attendees' in event:
                 attendees = [a['email'] for a in event['attendees']]
                 output += f"Attendees: {', '.join(attendees)}\n"
-            
+
             output += f"Link: {event.get('htmlLink', 'N/A')}\n"
             output += f"Status: {event.get('status', 'N/A')}"
-            
+
             return output
-            
+
         except Exception as e:
-            return f"Error getting event: {str(e)}"
+            error_msg = str(e)
+            if "404" in error_msg or "Not Found" in error_msg:
+                return f"Error getting event: Event with ID '{event_id}' not found. Please check:\n1. The event ID is correct\n2. The event exists in your primary calendar\n3. You have permission to access this event"
+            else:
+                return f"Error getting event: {error_msg}"
 
 
 class UpdateEventTool(BaseTool):
@@ -749,45 +783,114 @@ class UpdateEventTool(BaseTool):
     ) -> str:
         """Update calendar event"""
         try:
+            # Validate event_id format
+            if not event_id or not isinstance(event_id, str):
+                return "Error updating event: Invalid event ID format"
+
+            # Clean event_id (remove any extra whitespace)
+            event_id = event_id.strip()
+
+            # Check if event_id looks like a valid Google Calendar event ID
+            # Google Calendar event IDs are typically alphanumeric strings, sometimes with underscores
+            if not re.match(r'^[a-zA-Z0-9_\-]+$', event_id):
+                return f"Error updating event: Invalid event ID format '{event_id}'. Event IDs should be alphanumeric strings."
+
             # Get existing event
-            event = self.calendar_tools.events_get(
-                calendarId='primary',
-                eventId=event_id,
-            )
-            
+            try:
+                event = self.calendar_tools.events_get(
+                    calendarId='primary',
+                    eventId=event_id,
+                )
+
+                # Log the original event for debugging
+                logging.debug(f"Original event data: {event}")
+            except Exception as get_error:
+                error_msg = str(get_error)
+                if "404" in error_msg or "Not Found" in error_msg:
+                    return f"Error updating event: Event with ID '{event_id}' not found. Please check:\n1. The event ID is correct\n2. The event exists in your primary calendar\n3. You have permission to access this event"
+                else:
+                    return f"Error accessing event: {error_msg}"
+
+            # Build update body with only the fields that need to be updated
+            update_body = {}
+
+            # Track which fields are being updated
+            updated_fields = []
+
             # Update fields if provided
-            if summary:
-                event['summary'] = summary
+            if summary is not None:
+                update_body['summary'] = summary
+                updated_fields.append(f"summary='{summary}'")
+                logging.debug(f"Updating summary to: {summary}")
+
             if description is not None:
-                event['description'] = description
+                update_body['description'] = description
+                updated_fields.append(f"description='{description}'")
+                logging.debug(f"Updating description to: {description}")
+
             if location is not None:
-                event['location'] = location
-            
+                update_body['location'] = location
+                updated_fields.append(f"location='{location}'")
+                logging.debug(f"Updating location to: {location}")
+
+            # Handle start time updates
             if start_time:
-                tz = ZoneInfo(self.calendar_tools.config.timezone)
-                start_dt = datetime.datetime.fromisoformat(start_time).replace(tzinfo=tz)
-                event['start'] = {
-                    'dateTime': start_dt.isoformat(),
-                    'timeZone': self.calendar_tools.config.timezone,
-                }
-            
+                try:
+                    tz = ZoneInfo(self.calendar_tools.config.timezone)
+                    start_dt = datetime.datetime.fromisoformat(start_time).replace(tzinfo=tz)
+                    update_body['start'] = {
+                        'dateTime': start_dt.isoformat(),
+                        'timeZone': self.calendar_tools.config.timezone,
+                    }
+                    updated_fields.append(f"start_time={start_time}")
+                    logging.debug(f"Updating start time to: {update_body['start']}")
+                except ValueError as ve:
+                    return f"Error updating event: Invalid start_time format '{start_time}'. Use ISO format like '2024-01-01T10:00:00'"
+
+            # Handle end time updates
             if end_time:
-                tz = ZoneInfo(self.calendar_tools.config.timezone)
-                end_dt = datetime.datetime.fromisoformat(end_time).replace(tzinfo=tz)
-                event['end'] = {
-                    'dateTime': end_dt.isoformat(),
-                    'timeZone': self.calendar_tools.config.timezone,
-                }
-            
+                try:
+                    tz = ZoneInfo(self.calendar_tools.config.timezone)
+                    end_dt = datetime.datetime.fromisoformat(end_time).replace(tzinfo=tz)
+                    update_body['end'] = {
+                        'dateTime': end_dt.isoformat(),
+                        'timeZone': self.calendar_tools.config.timezone,
+                    }
+                    updated_fields.append(f"end_time={end_time}")
+                    logging.debug(f"Updating end time to: {update_body['end']}")
+                except ValueError as ve:
+                    return f"Error updating event: Invalid end_time format '{end_time}'. Use ISO format like '2024-01-01T11:00:00'"
+
+            # If no fields were provided to update, return early
+            if not updated_fields:
+                return "No update fields provided. Please specify at least one field to update (summary, description, location, start_time, end_time)."
+
+            # For Google Calendar API, we need to ensure we have at least one field to update
+            # and we shouldn't include fields that aren't being updated
+            logging.debug(f"Fields being updated: {', '.join(updated_fields)}")
+
+            # Log the update body for debugging
+            logging.debug(f"Update body being sent: {update_body}")
+
             # Update event
-            updated_event = self.calendar_tools.events_update(
-                calendarId='primary',
-                eventId=event_id,
-                body=event,
-            )
-            
-            return f"Event updated successfully: {updated_event.get('htmlLink')}"
-            
+            try:
+                updated_event = self.calendar_tools.events_update(
+                    calendarId='primary',
+                    eventId=event_id,
+                    body=update_body,
+                )
+
+                # Log the response for debugging
+                logging.debug(f"Update response: {updated_event}")
+
+                return f"Event updated successfully: {updated_event.get('htmlLink')}"
+            except Exception as update_error:
+                error_msg = str(update_error)
+                if "404" in error_msg or "Not Found" in error_msg:
+                    return f"Error updating event: Event with ID '{event_id}' not found during update. The event may have been deleted or you may not have permission to modify it."
+                else:
+                    return f"Error updating event: {error_msg}"
+
         except Exception as e:
             return f"Error updating event: {str(e)}"
 
@@ -802,15 +905,30 @@ class DeleteEventTool(BaseTool):
     def _run(self, event_id: str) -> str:
         """Delete calendar event"""
         try:
+            # Validate event_id format
+            if not event_id or not isinstance(event_id, str):
+                return "Error deleting event: Invalid event ID format"
+
+            # Clean event_id (remove any extra whitespace)
+            event_id = event_id.strip()
+
+            # Check if event_id looks like a valid Google Calendar event ID
+            if not re.match(r'^[a-zA-Z0-9_\-]+$', event_id):
+                return f"Error deleting event: Invalid event ID format '{event_id}'. Event IDs should be alphanumeric strings."
+
             self.calendar_tools.events_delete(
                 calendarId='primary',
                 eventId=event_id,
             )
-            
+
             return f"Event {event_id} deleted successfully"
-            
+
         except Exception as e:
-            return f"Error deleting event: {str(e)}"
+            error_msg = str(e)
+            if "404" in error_msg or "Not Found" in error_msg:
+                return f"Error deleting event: Event with ID '{event_id}' not found. Please check:\n1. The event ID is correct\n2. The event exists in your primary calendar\n3. You have permission to access this event"
+            else:
+                return f"Error deleting event: {error_msg}"
 
 
 class SearchEventsTool(BaseTool):
@@ -1047,11 +1165,11 @@ def initialize_calendar_tools(
     agent_id: Optional[str] = None,
 ) -> List[BaseTool]:
     """Initialize and return Google Calendar tools for LangChain
-    
+
     Args:
         credentials_file: Path to Google OAuth2 credentials file
         timezone: Timezone for calendar events
-    
+
     Returns:
         List of LangChain tools for Google Calendar
     """
@@ -1063,8 +1181,45 @@ def initialize_calendar_tools(
         agent_id=agent_id,
     )
 
-    calendar_tools = GoogleCalendarTools(config)
-    return calendar_tools.get_langchain_tools()
+    try:
+        calendar_tools = GoogleCalendarTools(config)
+        tools = calendar_tools.get_langchain_tools()
+        return tools
+    except Exception as e:
+        # Return stub tools instead of raising exception
+        return _create_stub_tools(str(e))
+
+
+def _create_stub_tools(error_msg: str) -> List[BaseTool]:
+    """Create stub tools when calendar initialization fails"""
+    try:
+        from langchain_core.tools import Tool as CoreTool  # type: ignore
+    except Exception:  # pragma: no cover
+        from langchain.agents import Tool as CoreTool  # type: ignore
+
+    def _stub(_input: str = "") -> str:
+        return f"Google Calendar tool unavailable: {error_msg}. Check credentials and OAuth setup."
+
+    stub_tools = []
+    for tool_name in [
+        "calendar",
+        "create_calendar_event",
+        "list_calendar_events",
+        "get_calendar_event",
+        "update_calendar_event",
+        "delete_calendar_event",
+        "search_calendar_events",
+        "get_free_busy",
+        "list_calendars",
+    ]:
+        stub_tools.append(CoreTool(
+            name=tool_name,
+            description=f"Google Calendar tool (unavailable: {error_msg})",
+            func=_stub
+        ))
+
+    print(f"[DEBUG] Created {len(stub_tools)} stub calendar tools due to error: {error_msg}")
+    return stub_tools
 
 
 if __name__ == "__main__":

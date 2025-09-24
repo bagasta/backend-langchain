@@ -1,7 +1,7 @@
 import os
 import logging
 import time
-from typing import List, Optional, Any, Sequence, Tuple
+from typing import List, Optional, Any, Sequence, Tuple, Dict
 
 try:
     import psycopg2
@@ -79,9 +79,43 @@ def _connect_knowledge() -> Optional[Any]:
 
 # Track which tables we've optimized (index/ANALYZE) to avoid repeated DDL
 _OPTIMIZED_TABLES: set[str] = set()
+_TABLE_VECTOR_DIM_CACHE: Dict[str, Optional[int]] = {}
 _EMBED_CACHE_TTL = float(os.getenv("RAG_EMBED_CACHE_TTL_SECONDS", "900"))
 _EMBED_CACHE_MAX = int(os.getenv("RAG_EMBED_CACHE_MAX", "512"))
 _EMBED_CACHE: dict[Tuple[str, str], Tuple[float, List[float]]] = {}
+_IVFFLAT_MAX_DIM = int(os.getenv("RAG_IVFFLAT_MAX_DIM", "2000"))
+_FULLSCAN_TIMEOUT_MS = int(os.getenv("RAG_FULLSCAN_TIMEOUT_MS", "8000"))
+
+def _parse_model_dim_hints() -> Dict[str, int]:
+    hints: Dict[str, int] = {
+        "text-embedding-3-large": 3072,
+        "text-embedding-3-large-v1": 3072,
+        "text-embedding-3-small": 1536,
+        "text-embedding-3-small-v1": 1536,
+        "text-embedding-ada-002": 1536,
+    }
+    raw = os.getenv("RAG_MODEL_DIM_HINTS")
+    if not raw:
+        return hints
+    for entry in raw.split(","):
+        if not entry:
+            continue
+        try:
+            name, value = entry.split("=", 1)
+            dim = int(value.strip())
+            if dim > 0:
+                hints[name.strip()] = dim
+        except Exception:
+            continue
+    return hints
+
+_MODEL_DIM_HINTS = _parse_model_dim_hints()
+
+
+def _dim_for_model(model_name: Optional[str]) -> Optional[int]:
+    if not model_name:
+        return None
+    return _MODEL_DIM_HINTS.get(model_name)
 
 
 def _distance_to_similarity(distance: Any) -> Optional[float]:
@@ -176,6 +210,53 @@ def _table_name(user_id: str, agent_id: str) -> str:
     return f"tb_{uid}_{aid}"
 
 
+def _table_vector_dim(conn: Any, table: str) -> Optional[int]:
+    cached = _TABLE_VECTOR_DIM_CACHE.get(table)
+    if cached is not None:
+        return cached
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT atttypmod
+                FROM pg_attribute
+                WHERE attrelid = 'public."{table}"'::regclass
+                  AND attname = 'embedding'
+                LIMIT 1
+                """
+            )
+            row = cur.fetchone()
+            if row and isinstance(row[0], int) and row[0] > 0:
+                raw = int(row[0])
+                # pgvector stores the explicit dimension in atttypmod;
+                # some builds include VARHDRSZ (4) in older versions. Detect both.
+                if raw in _MODEL_DIM_HINTS.values():
+                    dim = raw
+                elif raw - 4 in _MODEL_DIM_HINTS.values():
+                    dim = raw - 4
+                else:
+                    # Prefer raw when positive; fallback subtracting 4 if the result is sensible.
+                    dim = raw if raw > 0 else None
+                    if dim and dim not in _MODEL_DIM_HINTS.values() and raw - 4 > 0:
+                        dim = raw - 4
+                if dim and dim > 0:
+                    _TABLE_VECTOR_DIM_CACHE[table] = dim
+                    return dim
+    except Exception:
+        pass
+    _TABLE_VECTOR_DIM_CACHE[table] = None
+    return None
+
+
+def _model_for_dimension(dim: int, prefer: Optional[str] = None) -> Optional[str]:
+    if prefer and _MODEL_DIM_HINTS.get(prefer) == dim:
+        return prefer
+    for name, hint_dim in _MODEL_DIM_HINTS.items():
+        if hint_dim == dim:
+            return name
+    return None
+
+
 def retrieve_topk(
     user_id: str,
     agent_id: str,
@@ -218,28 +299,53 @@ def retrieve_topk(
         if not vec:
             logger.info("[RAG] embedding failed; retrieval skipped")
             return []
+        if primary_model:
+            _MODEL_DIM_HINTS.setdefault(primary_model, len(vec))
 
     conn = _connect_knowledge()
     if not conn:
         logger.info("[RAG] no knowledge DB connection; retrieval skipped")
         return []
     try:
+        table_dim: Optional[int] = None
         tbl = _table_name(user_id, agent_id)
         logger.info(f"[RAG] querying table=public.\"{tbl}\"")
+        table_dim = _table_vector_dim(conn, tbl)
+        index_supported = table_dim is None or table_dim <= _IVFFLAT_MAX_DIM
+        if vec is not None and table_dim is not None and len(vec) != table_dim:
+            if query:
+                alt_model = _model_for_dimension(table_dim, prefer=primary_model)
+                if alt_model and alt_model != primary_model:
+                    logger.info(
+                        "[RAG] query vector dimension %s mismatches table (%s); re-embedding with %s",
+                        len(vec),
+                        table_dim,
+                        alt_model,
+                    )
+                    new_vec = _embed_query(query, api_key, model=alt_model)
+                    if new_vec:
+                        vec = new_vec
+                        _MODEL_DIM_HINTS.setdefault(alt_model, len(vec))
+            if vec is None or len(vec) != table_dim:
+                logger.warning(
+                    "[RAG] table %s expects dimension %s but query vector has %s; skipping retrieval",
+                    tbl,
+                    table_dim,
+                    0 if vec is None else len(vec),
+                )
+                return []
         # One-time best-effort index/ANALYZE to keep ANN fast on existing tables
         try:
-            if os.getenv("RAG_ENSURE_INDEX", "true").lower() == "true" and tbl not in _OPTIMIZED_TABLES:
+            if (
+                index_supported
+                and os.getenv("RAG_ENSURE_INDEX", "true").lower() == "true"
+                and tbl not in _OPTIMIZED_TABLES
+            ):
                 with conn.cursor() as _cur:
                     ops = os.getenv("RAG_INDEX_OPS", "vector_cosine_ops")
                     try:
                         _cur.execute(
-                            f"DROP INDEX IF EXISTS \"{tbl}_embedding_idx\""
-                        )
-                    except Exception:
-                        pass
-                    try:
-                        _cur.execute(
-                            f"CREATE INDEX \"{tbl}_embedding_idx\" ON public.\"{tbl}\" USING ivfflat (embedding {ops})"
+                            f"CREATE INDEX IF NOT EXISTS \"{tbl}_embedding_idx\" ON public.\"{tbl}\" USING ivfflat (embedding {ops})"
                         )
                     except Exception as index_exc:
                         logger.warning("[RAG] index ensure failed for %s: %s", tbl, index_exc)
@@ -248,6 +354,14 @@ def retrieve_topk(
                             _cur.execute(f"ANALYZE public.\"{tbl}\"")
                         except Exception as analyze_exc:
                             logger.warning("[RAG] analyze failed for %s: %s", tbl, analyze_exc)
+                _OPTIMIZED_TABLES.add(tbl)
+            elif not index_supported and tbl not in _OPTIMIZED_TABLES:
+                logger.info(
+                    "[RAG] skipping IVFFLAT index for %s (dimension %s exceeds limit %s)",
+                    tbl,
+                    table_dim,
+                    _IVFFLAT_MAX_DIM,
+                )
                 _OPTIMIZED_TABLES.add(tbl)
         except Exception as _e:  # pragma: no cover - permissions or races
             logger.warning("[RAG] index preparation failed: %s", _e)
@@ -262,13 +376,15 @@ def retrieve_topk(
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             # Statement timeout to fail fast on slow remote queries
             try:
-                ms = int(os.getenv("RAG_STATEMENT_TIMEOUT_MS", "500"))
-                cur.execute(f"SET statement_timeout TO {ms}")
+                timeout_ms = int(os.getenv("RAG_STATEMENT_TIMEOUT_MS", "2000"))
+                if not index_supported:
+                    timeout_ms = max(timeout_ms, _FULLSCAN_TIMEOUT_MS)
+                cur.execute(f"SET statement_timeout TO {timeout_ms}")
             except Exception:
                 pass
-            # Ensure ANN index is used aggressively
+            # Ensure ANN index is used aggressively only when an index exists
             try:
-                if os.getenv("RAG_DISABLE_SEQSCAN", "true").lower() == "true":
+                if index_supported and os.getenv("RAG_DISABLE_SEQSCAN", "true").lower() == "true":
                     cur.execute("SET enable_seqscan TO off")
             except Exception:
                 pass
@@ -306,11 +422,17 @@ def retrieve_topk(
                 conn.rollback()
             except Exception:
                 pass
-            alt = "text-embedding-3-small" if primary_model == "text-embedding-3-large" else "text-embedding-3-large"
-            logger.info(f"[RAG] retrying with alternate embedding model: {alt}")
-            vec = _embed_query(query, api_key, model=alt)
+            alt_dim = table_dim or _dim_for_model(primary_model) or 0
+            alt_model = None
+            if alt_dim:
+                alt_model = _model_for_dimension(alt_dim, prefer=None)
+            if not alt_model:
+                alt_model = "text-embedding-3-small" if primary_model == "text-embedding-3-large" else "text-embedding-3-large"
+            logger.info(f"[RAG] retrying with alternate embedding model: {alt_model}")
+            vec = _embed_query(query, api_key, model=alt_model)
             if not vec:
                 return []
+            _MODEL_DIM_HINTS.setdefault(alt_model, len(vec))
             try:
                 vec_str = "[" + ",".join(f"{float(x):.8f}" for x in vec) + "]"
                 sql = f"""
@@ -321,12 +443,14 @@ def retrieve_topk(
                 """
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     try:
-                        ms = int(os.getenv("RAG_STATEMENT_TIMEOUT_MS", "2000"))
-                        cur.execute(f"SET statement_timeout TO {ms}")
+                        timeout_ms = int(os.getenv("RAG_STATEMENT_TIMEOUT_MS", "2000"))
+                        if not index_supported:
+                            timeout_ms = max(timeout_ms, _FULLSCAN_TIMEOUT_MS)
+                        cur.execute(f"SET statement_timeout TO {timeout_ms}")
                     except Exception:
                         pass
                     try:
-                        if os.getenv("RAG_DISABLE_SEQSCAN", "true").lower() == "true":
+                        if index_supported and os.getenv("RAG_DISABLE_SEQSCAN", "true").lower() == "true":
                             cur.execute("SET enable_seqscan TO off")
                     except Exception:
                         pass
@@ -359,7 +483,8 @@ def retrieve_topk(
         return []
     finally:
         try:
-            conn.close()
+            if getattr(conn, "closed", 0):
+                globals()["_KNOWLEDGE_CONN"] = None
         except Exception:
             pass
 

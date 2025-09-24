@@ -6,6 +6,20 @@ const prisma = new PrismaClient();
 let kprisma = null; // Lazy knowledge DB client
 let mprisma = null; // Lazy memory DB client
 
+const VECTOR_DIM = (() => {
+  const raw = parseInt(
+    process.env.KNOWLEDGE_VECTOR_DIM
+      || process.env.RAG_VECTOR_DIM
+      || process.env.KNOWLEDGE_EMBED_DIM
+      || process.env.KNOWLEDGE_EMBEDDING_DIM
+      || '3072',
+    10,
+  );
+  return Number.isFinite(raw) && raw > 0 ? raw : 3072;
+})();
+
+const IVFFLAT_MAX_DIM = parseInt(process.env.RAG_IVFFLAT_MAX_DIM || '2000', 10);
+
 function jsonBigInt(obj) {
   return JSON.stringify(obj, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
 }
@@ -84,38 +98,39 @@ async function createKnowledgeTable(userId, agentId) {
     try { await kp.$executeRaw`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`; } catch {}
 
     // Create table in knowledge DB public schema.
-    // Use pgvector with explicit 3072 dimension to match text-embedding-3-large
+    // Use pgvector with explicit dimension aligned to configured embeddings
     try {
       await kp.$executeRawUnsafe(
         `CREATE TABLE IF NOT EXISTS public."${tableName}" (
           id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
           text text NOT NULL,
           metadata jsonb,
-          embedding vector(3072)
+          embedding vector(${VECTOR_DIM})
         )`
       );
-      // Best-effort: clean up legacy L2 index and replace with cosine variant
-      try { await kp.$executeRawUnsafe(`DROP INDEX IF EXISTS "${tableName}_embedding_idx"`); } catch {}
-      try {
-        await kp.$executeRawUnsafe(
-          `CREATE INDEX "${tableName}_embedding_idx" ON public."${tableName}" USING ivfflat (embedding vector_cosine_ops)`
-        );
-      } catch {}
+      if (!Number.isFinite(IVFFLAT_MAX_DIM) || VECTOR_DIM <= IVFFLAT_MAX_DIM) {
+        try {
+          await kp.$executeRawUnsafe(
+            `CREATE INDEX IF NOT EXISTS "${tableName}_embedding_idx" ON public."${tableName}" USING ivfflat (embedding vector_cosine_ops)`
+          );
+        } catch {}
+      }
     } catch (_e) {
       await kp.$executeRawUnsafe(
         `CREATE TABLE IF NOT EXISTS public."${tableName}" (
           id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
           text text NOT NULL,
           metadata jsonb,
-          embedding vector(3072)
+          embedding vector(${VECTOR_DIM})
         )`
       );
-      try { await kp.$executeRawUnsafe(`DROP INDEX IF EXISTS "${tableName}_embedding_idx"`); } catch {}
-      try {
-        await kp.$executeRawUnsafe(
-          `CREATE INDEX "${tableName}_embedding_idx" ON public."${tableName}" USING ivfflat (embedding vector_cosine_ops)`
-        );
-      } catch {}
+      if (!Number.isFinite(IVFFLAT_MAX_DIM) || VECTOR_DIM <= IVFFLAT_MAX_DIM) {
+        try {
+          await kp.$executeRawUnsafe(
+            `CREATE INDEX IF NOT EXISTS "${tableName}_embedding_idx" ON public."${tableName}" USING ivfflat (embedding vector_cosine_ops)`
+          );
+        } catch {}
+      }
     }
     return { ok: true, table: tableName };
   } catch (e) {

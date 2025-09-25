@@ -1,0 +1,64 @@
+/home/bagas/langchain_modular_backend/agents/tools/google_search.py:13: LangChainDeprecationWarning: The class `GoogleSearchRun` was deprecated in LangChain 0.0.33 and will be removed in 1.0. An updated version of the class exists in the :class:`~langchain-google-community package and should be used instead. To use it run `pip install -U :class:`~langchain-google-community` and import as `from :class:`~langchain_google_community import GoogleSearchRun``.
+  google_search_tool = GoogleSearchRun()
+/home/bagas/langchain_modular_backend/agents/tools/google_places.py:7: LangChainDeprecationWarning: The class `GooglePlacesTool` was deprecated in LangChain 0.0.33 and will be removed in 1.0. An updated version of the class exists in the :class:`~langchain-google-community package and should be used instead. To use it run `pip install -U :class:`~langchain-google-community` and import as `from :class:`~langchain_google_community import GooglePlacesTool``.
+  google_places_tool = GooglePlacesTool()
+/home/bagas/langchain_modular_backend/.venv/lib/python3.12/site-packages/pydantic/main.py:253: LangChainDeprecationWarning: The class `GooglePlacesAPIWrapper` was deprecated in LangChain 0.0.33 and will be removed in 1.0. An updated version of the class exists in the :class:`~langchain-google-community package and should be used instead. To use it run `pip install -U :class:`~langchain-google-community` and import as `from :class:`~langchain_google_community import GooglePlacesAPIWrapper``.
+  validated_self = self.__pydantic_validator__.validate_python(data, self_instance=self)
+/home/bagas/langchain_modular_backend/agents/tools/google_cloud_text_to_speech.py:7: LangChainDeprecationWarning: The class `GoogleCloudTextToSpeechTool` was deprecated in LangChain 0.0.33 and will be removed in 1.0. An updated version of the class exists in the :class:`~langchain-google-community package and should be used instead. To use it run `pip install -U :class:`~langchain-google-community` and import as `from :class:`~langchain_google_community import TextToSpeechTool``.
+  google_cloud_text_to_speech_tool = GoogleCloudTextToSpeechTool()
+INFO:     Started server process [17818]
+INFO:     Waiting for application startup.
+INFO:memory_bootstrap:[MEM] database memory_agent already exists
+WARNING:rag:[RAG] warmup failed: cannot access local variable 'time' where it is not associated with a value
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+WARNING:db.client:Prisma auto-sync skipped (exit 1). Set PRISMA_AUTO_SYNC=false to silence this.
+INFO:agents.tools.google_calendar:Calendar discovery client unavailable (name: calendar  version: v3); falling back to REST session
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:runner:[RAG] timings agent=63 t_embed=0.000 t_retrieve=0.000 prompt_tokens=0 t_agent=0.000 t_llm_prefill=-1.000 t_first_token=-1.000 t_total=39.605
+[RAG] unexpected error preparing context: cannot access local variable 'time' where it is not associated with a value
+[MEM] Using SQL memory backend (host=194.238.23.242:5432 db=memory_agent limit=100)
+[MEM] Using SQL memory table=memory_28_63 for session=28:63|30
+
+
+[1m> Entering new AgentExecutor chain...[0m
+[32;1m[1;3m
+Invoking: `websearch` with `job desk AI impor ekspor`
+
+
+[0m[38;5;200m[1;3mBerikut adalah beberapa contoh deskripsi pekerjaan terkait posisi di bidang ekspor dan impor:
+
+1. **Staff Ekspor Impor**: Bertanggung jawab atas persiapan dan pengelolaan dokumen administrasi ekspor dan impor, menangani proses pengiriman, serta berkoordinasi dengan instansi terkait seperti bea cukai dan freight forwarder. ([loker.jobnas.com](https://loker.jobnas.com/lowongan-kerja/staff-ekspor-impor-general-affair-digital-marketing/?utm_source=openai))
+
+2. **Asisten Analis Ekspor Impor dan Remittance**: Melakukan pembayaran dan penerimaan pembayaran terkait transaksi ekspor-impor, mengelola dokumentasi, serta memastikan kepatuhan terhadap regulasi perdagangan internasional. ([assessmentcenter.lppi.or.id](https://assessmentcenter.lppi.or.id/id/recruitment/prohire2024papua10?utm_source=openai))
+
+3. **Supervisor Ekspor Impor**: Mengawasi operasional impor dan ekspor, mengembangkan hubungan dengan pelanggan dan vendor, serta memastikan kepatuhan terhadap peraturan dan kebijakan perusahaan. ([multimed.co.id](https://www.multimed.co.id/karir-2/lowongan-kerja-supervisor-ekspor-impor/?utm_source=openai))
+
+4. **Staf Admin Ekspor Impor**: Mengurus dokumen impor/ekspor, berkoordinasi dengan pihak terkait, memantau status pengiriman, dan memastikan kepatuhan terhadap regulasi perdagangan internasional. ([loker.id](https://www.loker.id/transportation-logistics/ekspor-impor/staf-admin-impor-ekspor-pt-human-life-indonesia-tangerang.html?utm_source=openai))
+
+5. **Spesialis Dokumen Ekspor-Impor**: Mengelola dokumentasi ekspor dan impor, mengurus pengiriman, menangani kendala teknis di lapangan, serta berkomunikasi dengan instansi pemerintah terkait. ([kitalulus.com](https://www.kitalulus.com/lowongan/detail/spesialis-dokumen-eksporimpor-hqi7?utm_source=openai))
+
+Setiap posisi memiliki tanggung jawab spesifik yang mendukung kelancaran proses ekspor dan impor sesuai dengan regulasi yang berlaku.[0m[32;1m[1;3mBerhasil! Informasi yang Anda minta:
+
+Berikut adalah beberapa contoh deskripsi pekerjaan terkait posisi di bidang ekspor dan impor:
+
+1. **Staff Ekspor Impor**: Bertanggung jawab atas persiapan dan pengelolaan dokumen administrasi ekspor dan impor, menangani proses pengiriman, serta berkoordinasi dengan instansi terkait seperti bea cukai dan freight forwarder.
+
+2. **Asisten Analis Ekspor Impor dan Remittance**: Melakukan pembayaran dan penerimaan pembayaran terkait transaksi ekspor-impor, mengelola dokumentasi, serta memastikan kepatuhan terhadap regulasi perdagangan internasional.
+
+3. **Supervisor Ekspor Impor**: Mengawasi operasional impor dan ekspor, mengembangkan hubungan dengan pelanggan dan vendor, serta memastikan kepatuhan terhadap peraturan dan kebijakan perusahaan.
+
+4. **Staf Admin Ekspor Impor**: Mengurus dokumen impor/ekspor, berkoordinasi dengan pihak terkait, memantau status pengiriman, dan memastikan kepatuhan terhadap regulasi perdagangan internasional.
+
+5. **Spesialis Dokumen Ekspor-Impor**: Mengelola dokumentasi ekspor dan impor, mengurus pengiriman, menangani kendala teknis di lapangan, serta berkomunikasi dengan instansi pemerintah terkait.
+
+Setiap posisi memiliki tanggung jawab spesifik yang mendukung kelancaran proses ekspor dan impor sesuai dengan regulasi yang berlaku.
+
+Apakah ada yang bisa saya bantu lagi? 😊[0m
+
+[1m> Finished chain.[0m
+[MEM] Fallback insert skipped; rows already exist for sid=30
+[MEM] Fallback persisted conversation to table=memory_28_63
+INFO:     103.186.35.6:0 - "POST /agents/63/run HTTP/1.1" 200 OK
